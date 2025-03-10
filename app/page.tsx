@@ -27,9 +27,9 @@ const DRIPCalculator = () => {
   // Updated default values based on technical requirements
   const defaultValues = {
     tickerSymbol: "SCHD",
-    initialInvestment: 50000,
-    annualContribution: 50000,
-    yearsToHold: 20,
+    initialInvestment: 1000,
+    annualContribution: 5000,
+    yearsToHold: 30,
     estimatedAnnualGrowth: 7.5, // Capital appreciation rate (%)
     dividendYield: 3.5, // Annual dividend yield (%)
     dividendGrowthRate: 11.18, // Annual dividend growth rate (%)
@@ -179,7 +179,7 @@ const DRIPCalculator = () => {
       <Card className="mb-8 shadow-lg">
         <CardHeader>
           <CardTitle>
-            <h1 className="bg-gradient-to-r from-indigo-400 to-pink-400 inline-block text-transparent bg-clip-text text-3xl font-black text-center mb-8 w-full">
+            <h1 className="bg-gradient-to-r from-indigo-500 to-teal-300 inline-block text-transparent bg-clip-text text-3xl font-black text-center mb-8 w-full">
               Dividend Reinvestment Calculator (DRIP Calc)
             </h1>
           </CardTitle>
