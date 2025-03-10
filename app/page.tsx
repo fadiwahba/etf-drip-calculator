@@ -22,6 +22,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
+import Footer from "@/components/Footer";
 
 const DRIPCalculator = () => {
   // Updated default values based on technical requirements
@@ -497,6 +498,8 @@ const DRIPCalculator = () => {
           </Card>
         </div>
       )}
+
+      <Footer />
     </div>
   );
 };
