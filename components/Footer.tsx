@@ -12,7 +12,7 @@ const Footer = () => {
               {" "}
               Copyright &copy; {getYear()}{" "}
               <a
-                className="text-indigo-500 hover:text-teal-500 transition duration-300"
+                className="text-rose-500 hover:text-amber-500 transition duration-300"
                 href="https://fadysoliman.name"
                 target="blank"
               >
@@ -32,7 +32,7 @@ const Footer = () => {
                 href="https://nextjs.org"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-indigo-500 hover:text-teal-500 transition duration-300"
+                className="text-rose-500 hover:text-amber-500 transition duration-300"
               >
                 Next.js
               </a>
@@ -41,7 +41,7 @@ const Footer = () => {
                 href="https://tailwindcss.com"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-indigo-500 hover:text-teal-500 transition duration-300"
+                className="text-rose-500 hover:text-amber-500 transition duration-300"
               >
                 Tailwind CSS
               </a>

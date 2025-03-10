@@ -207,7 +207,7 @@ const DRIPCalculator = () => {
       <Card className="mb-8 md:p-8 shadow-lg">
         <CardHeader>
           <CardTitle>
-            <h1 className="bg-gradient-to-r from-indigo-500 to-teal-300 inline-block text-transparent bg-clip-text text-xl md:text-3xl font-black text-center mb-8 w-full">
+            <h1 className="bg-gradient-to-r from-rose-400 to-amber-400 inline-block text-transparent bg-clip-text text-xl md:text-3xl font-black text-center mb-8 w-full">
               Dividend Reinvestment Calculator (DRIP Calc)
             </h1>
           </CardTitle>
@@ -334,7 +334,7 @@ const DRIPCalculator = () => {
                   id="enableDRIP"
                   checked={formData.enableDRIP}
                   onCheckedChange={handleSwitchChange}
-                  className="data-[state=checked]:bg-indigo-500"
+                  className="data-[state=checked]:bg-rose-400"
                 />
                 <Label htmlFor="enableDRIP" className="font-medium">
                   Enable Dividend Reinvestment
@@ -345,7 +345,7 @@ const DRIPCalculator = () => {
               <Button
                 size={"lg"}
                 type="submit"
-                className="w-auto transition duration-300 ease-in-out bg-indigo-500 hover:bg-indigo-700 text-white"
+                className="w-auto transition duration-300 ease-in-out bg-rose-400 hover:bg-rose-600 text-white"
               >
                 Calculate Returns
               </Button>
@@ -411,13 +411,13 @@ const DRIPCalculator = () => {
                       <Bar
                         dataKey="cumulativeDividends"
                         name="Reinvested Dividend Total"
-                        fill="#676bd6"
+                        fill="#fcac50"
                       />
                     )}
                     <Bar
                       dataKey="endBalance"
                       name="Portfolio Total Value"
-                      fill="#67d6ba"
+                      fill="#ff8080"
                     />
                   </BarChart>
                 </ResponsiveContainer>
