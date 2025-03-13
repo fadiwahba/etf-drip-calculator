@@ -1,0 +1,60 @@
+[
+  {
+    "ticker": "VOOG",
+    "sharePrice": 339.49,
+    "oneYReturn": 0.13,
+    "threeYReturn": 0.15,
+    "fiveYReturn": 0.16,
+    "tenYReturn": 0.12,
+    "avgReturn": 0.12,
+    "dividendYield": 0.0,
+    "riskRating": 8
+  },
+  {
+    "ticker": "VOO",
+    "sharePrice": 513.76,
+    "oneYReturn": 0.18,
+    "threeYReturn": 0.14,
+    "fiveYReturn": 0.13,
+    "tenYReturn": 0.12,
+    "fifteenYReturn": 0.11,
+    "avgReturn": 0.12,
+    "dividendYield": 0.0,
+    "riskRating": 4
+  },
+  {
+    "ticker": "VGT",
+    "sharePrice": 556.46,
+    "oneYReturn": 0.16,
+    "threeYReturn": 0.18,
+    "fiveYReturn": 0.2,
+    "tenYReturn": 0.18,
+    "fifteenYReturn": 0.17,
+    "twentyYReturn": 0.16,
+    "avgReturn": 0.17,
+    "dividendYield": 0.0,
+    "riskRating": 9
+  },
+  {
+    "ticker": "SCHG",
+    "sharePrice": 25.43,
+    "oneYReturn": 0.2,
+    "threeYReturn": 0.157,
+    "fiveYReturn": 0.202,
+    "tenYReturn": 0.158,
+    "avgReturn": 0.15,
+    "dividendYield": 0.0,
+    "riskRating": 7
+  },
+  {
+    "ticker": "SCHD",
+    "sharePrice": 27.44,
+    "oneYReturn": 0.144,
+    "threeYReturn": 0.074,
+    "fiveYReturn": 0.147,
+    "tenYReturn": 0.113,
+    "avgReturn": 0.11,
+    "dividendYield": 0.03,
+    "riskRating": 3
+  }
+]
