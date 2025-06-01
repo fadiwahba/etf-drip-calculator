@@ -4,7 +4,6 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -12,16 +11,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from "recharts";
 import Footer from "@/components/Footer";
 import { CalculatorInputData, ResultItem } from "@/types";
 import GrowthColumnChart from "@/components/GrowthColumnChart";
@@ -307,8 +296,6 @@ const DRIPCalculator: React.FC = () => {
       {hasCalculated && (
         <div>
           <GrowthColumnChart formData={appliedFormData} results={results} />
-
-          
         </div>
       )}
 
