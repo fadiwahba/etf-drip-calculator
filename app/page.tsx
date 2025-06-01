@@ -1,320 +1,360 @@
 "use client";
-import React, { useState, useEffect, ChangeEvent, FormEvent } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+
+import React, { useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import {
   Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from "recharts";
-import Footer from "@/components/Footer";
-import { CalculatorInputData, ResultItem } from "@/types";
-import GrowthColumnChart from "@/components/GrowthColumnChart";
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
-const DRIPCalculator: React.FC = () => {
-  // Updated default values based on the new projection requirements.
-  const defaultValues: CalculatorInputData = {
-    tickerSymbol: "SCHD", // Default ETF ticker symbol.
-    initialInvestment: 10000,
-    monthlyContribution: 0, // Monthly contribution
-    yearsToHold: 30,
-    estimatedAnnualGrowth: 7.7, // Capital appreciation rate (%)
-    dividendYield: 3.5, // Annual dividend yield (%)
-    dividendGrowthRate: 11.04, // Annual dividend growth rate (%)
-    dividendTaxRate: 28, // Dividend tax rate (%)
-    enableDRIP: true, // Dividend Reinvestment (DRIP) enabled by default.
-  };
+import { Info } from "lucide-react";
+interface ProjectionRow {
+  year: number;
+  startBalance: number;
+  endBalance: number;
+  // cagrPercent: number;
+}
 
-  // State hooks for form data and applied (submitted) data.
-  const [formData, setFormData] = useState<CalculatorInputData>(defaultValues);
-  const [appliedFormData, setAppliedFormData] =
-    useState<CalculatorInputData>(defaultValues);
-  const [results, setResults] = useState<ResultItem[]>([]);
-  const [hasCalculated, setHasCalculated] = useState<boolean>(false);
+const DEFAULT_PIR = 28; // % max PIR in NZ
+const FDR_RATE = 0.05; // 5% deemed return taxed annually
+const DEFAULT_EFFECTIVE_TAX = FDR_RATE * (DEFAULT_PIR / 100); // 0.05 * 0.28 = 1.4%
 
-  // Handle form input changes.
-  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setFormData({
-      ...formData,
-      [name]: name === "tickerSymbol" ? value : parseFloat(value) || 0,
+const FREQUENCY_MAP = {
+  monthly: 12,
+  quarterly: 4,
+  yearly: 1,
+};
+
+export default function Home() {
+  // Form state
+  const [initialInvestment, setInitialInvestment] = useState("100000");
+  const [cagr, setCagr] = useState("15");
+  const [years, setYears] = useState("15");
+  const [taxRate, setTaxRate] = useState(DEFAULT_EFFECTIVE_TAX.toFixed(3)); // default 1.4%
+  const [extraInvestment, setExtraInvestment] = useState("0");
+  const [extraFrequency, setExtraFrequency] =
+    useState<keyof typeof FREQUENCY_MAP>("monthly");
+
+  const [projectionData, setProjectionData] = useState<ProjectionRow[]>([]);
+
+  // Helper: format NZD currency
+  const formatNZD = (value: number) =>
+    value.toLocaleString("en-NZ", {
+      style: "currency",
+      currency: "NZD",
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
     });
-  };
 
-  // Handle switch toggle.
-  const handleSwitchChange = () => {
-    setFormData({
-      ...formData,
-      enableDRIP: !formData.enableDRIP,
-    });
-  };
+  // Calculation logic
+  const calculateProjection = () => {
+    // Parse inputs
+    const principal = parseFloat(initialInvestment);
+    const annualReturn = parseFloat(cagr) / 100;
+    const term = parseInt(years);
+    const tax = parseFloat(taxRate);
+    const extraAmt = parseFloat(extraInvestment);
+    const freq = FREQUENCY_MAP[extraFrequency];
 
-  // Improved calculation function with accurate dividend reinvestment tracking
-  const calculateResults = (data: CalculatorInputData): ResultItem[] => {
-    const {
-      initialInvestment,
-      monthlyContribution,
-      yearsToHold,
-      estimatedAnnualGrowth,
-      dividendYield,
-      dividendGrowthRate,
-      dividendTaxRate,
-      enableDRIP,
-    } = data;
+    // Validation
+    if (isNaN(principal) || principal <= 0) {
+      alert("Please enter a valid initial investment amount > 0");
+      return;
+    }
+    if (isNaN(annualReturn) || annualReturn <= 0) {
+      alert("Please enter a valid CAGR % > 0");
+      return;
+    }
+    if (isNaN(term) || term <= 0) {
+      alert("Please enter a valid investment term (years) > 0");
+      return;
+    }
+    if (isNaN(tax) || tax < 0 || tax > 1) {
+      alert(
+        "Please enter a valid tax rate between 0 and 1 (e.g. 0.014 for 1.4%)"
+      );
+      return;
+    }
+    if (isNaN(extraAmt) || extraAmt < 0) {
+      alert("Please enter a valid extra investment amount >= 0");
+      return;
+    }
 
-    // Convert percentages to decimals
-    const annualGrowthRate = estimatedAnnualGrowth / 100;
-    const initialDividendYield = dividendYield / 100;
-    const dividendGrowth = dividendGrowthRate / 100;
-    const taxRate = dividendTaxRate / 100;
-    const annualContribution = monthlyContribution * 12;
+    // Effective annual net return after tax drag on portfolio value
+    // Tax drag applies on portfolio value annually (FDR method)
+    // So net annual return = gross return - tax drag
+    // tax drag = tax * portfolio value * 1 (since taxRate is effective tax rate on portfolio value)
+    // Simplified: netReturn = annualReturn - tax
 
-    const resultsArray: ResultItem[] = [];
+    const netAnnualReturn = annualReturn - tax;
+    if (netAnnualReturn <= 0) {
+      alert(
+        `Tax drag (${(tax * 100).toFixed(
+          2
+        )}%) is higher than or equal to CAGR (${(annualReturn * 100).toFixed(
+          2
+        )}%). No growth possible.`
+      );
+      return;
+    }
 
-    // Initialize tracking variables
-    let portfolioValue = initialInvestment;
-    let totalContributions = initialInvestment;
-    let totalDividendsReinvested = 0;
-    let dividendComponent = 0; // Tracks growth from reinvested dividends
-    let contributionComponent = initialInvestment; // Tracks growth from contributions
+    // Compound growth with extra investments at frequency
+    // Calculate growth monthly/quarterly/yearly with reinvested dividends
 
-    for (let year = 1; year <= yearsToHold; year++) {
-      // Calculate dividend yield for this year (with growth)
-      const currentDividendYield =
-        initialDividendYield * Math.pow(1 + dividendGrowth, year - 1);
+    // We'll do monthly compounding for accuracy with extra contributions
+    const periodsPerYear = 12;
+    const totalPeriods = term * periodsPerYear;
 
-      // Calculate annual dividend based on portfolio value
-      const annualDividendBeforeTax = portfolioValue * currentDividendYield;
-      const annualDividendAfterTax = annualDividendBeforeTax * (1 - taxRate);
+    // Convert netAnnualReturn to monthly rate
+    const monthlyReturn = Math.pow(1 + netAnnualReturn, 1 / periodsPerYear) - 1;
 
-      // Apply capital appreciation to the different components
-      contributionComponent *= 1 + annualGrowthRate;
-      dividendComponent *= 1 + annualGrowthRate;
+    // Extra investment per period depends on frequency
+    const extraPerPeriod = extraAmt / (periodsPerYear / freq);
 
-      // Add new contribution
-      totalContributions += annualContribution;
-      contributionComponent += annualContribution;
+    // We'll calculate portfolio value at each year-end (every 12 months)
+    // For each month:
+    // 1. Portfolio grows by monthlyReturn
+    // 2. Extra investment added if month aligns with frequency
 
-      // Handle dividend reinvestment if DRIP is enabled
-      if (enableDRIP) {
-        // Reinvest dividends, which will compound in future years
-        totalDividendsReinvested += annualDividendAfterTax;
-        dividendComponent += annualDividendAfterTax;
+    let portfolioValue = principal;
+    const data: ProjectionRow[] = [];
+
+    for (let year = 0; year <= term; year++) {
+      // Record start balance at beginning of year
+      const startBalance = portfolioValue;
+
+      // Simulate 12 months growth and contributions
+      for (let month = 1; month <= 12; month++) {
+        // Apply growth
+        portfolioValue = portfolioValue * (1 + monthlyReturn);
+
+        // Add extra investment if month matches frequency
+        // Frequency months: monthly=every month, quarterly=months 3,6,9,12, yearly=month 12 only
+        if (
+          extraFrequency === "monthly" ||
+          (extraFrequency === "quarterly" && month % 3 === 0) ||
+          (extraFrequency === "yearly" && month === 12)
+        ) {
+          portfolioValue += extraPerPeriod;
+        }
       }
 
-      // Calculate total portfolio value
-      portfolioValue = contributionComponent + dividendComponent;
+      // // Calculate CAGR % for the year (annualized growth from startBalance to endBalance)
+      // const cagrPercent =
+      //   startBalance === 0 ? 0 : (portfolioValue / startBalance - 1) * 100;
 
-      // Calculate this year's capital appreciation (for reporting)
-      const previousValue =
-        year > 1 ? resultsArray[year - 2].portfolioValue : initialInvestment;
-      const yearlyContribution = annualContribution;
-      const yearlyDividend = enableDRIP ? annualDividendAfterTax : 0;
-      const capitalAppreciation =
-        portfolioValue - previousValue - yearlyContribution - yearlyDividend;
-
-      // Store results
-      resultsArray.push({
+      data.push({
         year,
-        dividendIncomeMonthly: Math.round(annualDividendAfterTax / 12),
-        dividendIncomeYearly: Math.round(annualDividendAfterTax),
-        capitalAppreciation: Math.round(capitalAppreciation),
-        reinvestedDividendsTotal: Math.round(
-          enableDRIP ? totalDividendsReinvested : 0
-        ),
-        reinvestedDividendsValue: Math.round(
-          enableDRIP ? dividendComponent : 0
-        ),
-        totalInvestment: Math.round(totalContributions),
-        portfolioValue: Math.round(portfolioValue),
+        startBalance,
+        endBalance: portfolioValue,
+        // cagrPercent,
       });
     }
 
-    return resultsArray;
+    setProjectionData(data);
   };
-
-  // Handle form submission: update applied data and results.
-  const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
-    e.preventDefault();
-    setAppliedFormData(formData);
-    setResults(calculateResults(formData));
-    setHasCalculated(true);
-  };
-
-  // Automatically calculate initial results when component mounts.
-  useEffect(() => {
-    const initialResults = calculateResults(appliedFormData);
-    setResults(initialResults);
-    setHasCalculated(true);
-  }, []);
 
   return (
-    <div className="w-full max-w-6xl mx-auto py-8 px-4">
-      <Card className="mb-8 md:p-8 shadow-lg">
+    <main className="min-h-screen p-6 bg-gray-50 flex flex-col items-center">
+      <h1 className="text-3xl font-black uppercase mb-8 bg-gradient-to-r from-indigo-500 via-pink-500 to-amber-500 text-transparent bg-clip-text">Stock Investment Calculator</h1>
+
+      <Card className="max-w-4xl w-full p-6 mb-8">
         <CardHeader>
-          <CardTitle>
-            <h1 className="bg-gradient-to-r from-rose-400 to-amber-400 inline-block text-transparent bg-clip-text text-xl md:text-3xl font-black text-center mb-8 w-full">
-              Portfolio Projection Calculator
-            </h1>
-          </CardTitle>
-          <CardDescription>
-            <p className="text-center text-gray-500 mb-8">
-              Enter your investment parameters below. By default, dividend
-              reinvestment is enabled. The calculator uses an initial balance,
-              monthly contributions, a share price growth rate, and dividend
-              parameters (including tax and growth) to project the portfolio
-              value over 30 years.
-            </p>
-          </CardDescription>
+          <CardTitle>Input Parameters</CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-2">
-                <Label htmlFor="initialInvestment">
-                  Initial Investment ($)
-                </Label>
-                <Input
-                  id="initialInvestment"
-                  name="initialInvestment"
-                  type="number"
-                  value={formData.initialInvestment}
-                  onChange={handleChange}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="monthlyContribution">
-                  Monthly Contribution ($)
-                </Label>
-                <Input
-                  id="monthlyContribution"
-                  name="monthlyContribution"
-                  type="number"
-                  value={formData.monthlyContribution}
-                  onChange={handleChange}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="yearsToHold">Years to Hold</Label>
-                <Input
-                  id="yearsToHold"
-                  name="yearsToHold"
-                  type="number"
-                  min="1"
-                  max="50"
-                  value={formData.yearsToHold}
-                  onChange={handleChange}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="tickerSymbol">ETF Ticker Symbol</Label>
-                <Input
-                  id="tickerSymbol"
-                  name="tickerSymbol"
-                  type="text"
-                  value={formData.tickerSymbol}
-                  onChange={handleChange}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="estimatedAnnualGrowth">
-                  Estimated Annual Growth (%)
-                </Label>
-                <Input
-                  id="estimatedAnnualGrowth"
-                  name="estimatedAnnualGrowth"
-                  type="number"
-                  step="0.1"
-                  value={formData.estimatedAnnualGrowth}
-                  onChange={handleChange}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="dividendYield">Dividend Yield (%)</Label>
-                <Input
-                  id="dividendYield"
-                  name="dividendYield"
-                  type="number"
-                  step="0.1"
-                  value={formData.dividendYield}
-                  onChange={handleChange}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="dividendGrowthRate">
-                  Dividend Growth Rate (%)
-                </Label>
-                <Input
-                  id="dividendGrowthRate"
-                  name="dividendGrowthRate"
-                  type="number"
-                  step="0.1"
-                  value={formData.dividendGrowthRate}
-                  onChange={handleChange}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="dividendTaxRate">Dividend Tax Rate (%)</Label>
-                <Input
-                  id="dividendTaxRate"
-                  name="dividendTaxRate"
-                  type="number"
-                  step="0.1"
-                  value={formData.dividendTaxRate}
-                  onChange={handleChange}
-                />
-              </div>
-              <div className="flex items-center space-x-2 pt-8">
-                <Switch
-                  id="enableDRIP"
-                  checked={formData.enableDRIP}
-                  onCheckedChange={handleSwitchChange}
-                  className="data-[state=checked]:bg-rose-400"
-                />
-                <Label htmlFor="enableDRIP" className="font-medium">
-                  Enable Dividend Reinvestment
-                </Label>
-              </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              calculateProjection();
+            }}
+            className="grid grid-cols-1 sm:grid-cols-2 gap-6"
+          >
+            <div>
+              <Label htmlFor="initialInvestment">
+                Initial Investment Amount ($)
+              </Label>
+              <Input
+                id="initialInvestment"
+                type="number"
+                min={0}
+                step={100}
+                value={initialInvestment}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setInitialInvestment(e.target.value)
+                }
+                required
+              />
             </div>
-            <div className="flex justify-center my-4">
-              <Button
-                size="lg"
-                type="submit"
-                className="w-auto transition duration-300 ease-in-out bg-rose-400 hover:bg-rose-600 text-white"
+
+            <div>
+              <Label htmlFor="cagr">Annual Return (CAGR %)</Label>
+              <Input
+                id="cagr"
+                type="number"
+                min={0}
+                step={0.01}
+                value={cagr}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setCagr(e.target.value)
+                }
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="years">Investment Term (Years)</Label>
+              <Input
+                id="years"
+                type="number"
+                min={1}
+                step={1}
+                value={years}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setYears(e.target.value)
+                }
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="taxRate" className="flex items-center gap-1">
+                Annual Tax Rate
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="w-3 h-3 text-slate-400" />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Default New Zealand tax: 5% FDR × 28% PIR = 1.4%</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </Label>
+              <Input
+                id="taxRate"
+                type="number"
+                min={0}
+                max={1}
+                step={0.001}
+                value={taxRate}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setTaxRate(e.target.value)
+                }
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="extraInvestment">
+                Extra Investment Amount ($)
+              </Label>
+              <Input
+                id="extraInvestment"
+                type="number"
+                min={0}
+                step={50}
+                value={extraInvestment}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setExtraInvestment(e.target.value)
+                }
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="extraFrequency">Extra Investment Frequency</Label>
+              <Select
+                value={extraFrequency}
+                onValueChange={(value: keyof typeof FREQUENCY_MAP) =>
+                  setExtraFrequency(value)
+                }
               >
-                Calculate Returns
+                <SelectTrigger id="extraFrequency" className="w-full">
+                  <SelectValue placeholder="Select frequency" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="monthly">Monthly</SelectItem>
+                    <SelectItem value="quarterly">Quarterly</SelectItem>
+                    <SelectItem value="yearly">Yearly</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="sm:col-span-2 flex justify-center mt-4">
+              <Button type="submit" className="bg-indigo-500 transition duration-300 hover:-translate-y-1 hover:shadow-lg hover:shadow-teal-200 hover:bg-teal-400">
+                Calculate Projection
               </Button>
             </div>
           </form>
         </CardContent>
       </Card>
 
-      {hasCalculated && (
-        <div>
-          <GrowthColumnChart formData={appliedFormData} results={results} />
-
-          
-        </div>
+      {projectionData.length > 0 && (
+        <Card className="max-w-4xl w-full overflow-auto">
+          <CardHeader>
+            <CardTitle>Projection Breakdown</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <table className="w-full border-collapse border border-gray-300">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="border border-gray-300 px-4 py-2 text-left">
+                    Year
+                  </th>
+                  <th className="border border-gray-300 px-4 py-2 text-right">
+                    Start Balance
+                  </th>
+                  <th className="border border-gray-300 px-4 py-2 text-right">
+                    End Balance
+                  </th>
+                  {/* <th className="border border-gray-300 px-4 py-2 text-right">
+                    CAGR %
+                  </th> */}
+                </tr>
+              </thead>
+              <tbody>
+                {projectionData.map(
+                  ({ year, startBalance, endBalance }) => (
+                    <tr
+                      key={year}
+                      className={year % 2 === 0 ? "bg-white" : "bg-gray-50"}
+                    >
+                      <td className="border border-gray-300 px-4 py-2">
+                        {year}
+                      </td>
+                      <td className="border border-gray-300 px-4 py-2 text-right">
+                        {formatNZD(startBalance)}
+                      </td>
+                      <td className="border border-gray-300 px-4 py-2 text-right">
+                        {formatNZD(endBalance)}
+                      </td>
+                      {/* <td className="border border-gray-300 px-4 py-2 text-right">
+                        {cagrPercent.toFixed(2)}%
+                      </td> */}
+                    </tr>
+                  )
+                )}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
       )}
-
-      <Footer />
-    </div>
+    </main>
   );
-};
-
-export default DRIPCalculator;
+}
