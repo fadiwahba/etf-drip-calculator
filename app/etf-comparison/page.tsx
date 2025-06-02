@@ -88,7 +88,13 @@ export default function ETFProjectionPage() {
   const [computedTableData, setComputedTableData] = useState<ETFWithGrowth[]>(
     []
   );
-  const [chartDatasets, setChartDatasets] = useState<any[]>([]);
+  const [chartDatasets, setChartDatasets] = useState<{
+    label: string;
+    data: number[];
+    borderColor: string;
+    backgroundColor: string;
+    tension: number;
+  }[]>([]);
   const [chartLabels, setChartLabels] = useState<string[]>([]);
 
   // Function to recalc table and chart data
@@ -135,7 +141,7 @@ export default function ETFProjectionPage() {
   // On first render, compute default results.
   useEffect(() => {
     recalcProjections();
-  }, []);
+  }, [recalcProjections]);
 
   // Form submission handler: recalc and update results.
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
