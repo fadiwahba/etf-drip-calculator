@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/tooltip";
 
 import { Info } from "lucide-react";
+
 interface ProjectionRow {
   year: number;
   startBalance: number;
@@ -39,10 +40,12 @@ const FREQUENCY_MAP = {
 };
 
 export default function Home() {
+  const currentYear = new Date().getFullYear();
   // Form state
   const [initialInvestment, setInitialInvestment] = useState("100000");
   const [cagr, setCagr] = useState("15");
   const [years, setYears] = useState("15");
+  const [startYear, setStartYear] = useState(String(currentYear));
   const [taxRate, setTaxRate] = useState(DEFAULT_EFFECTIVE_TAX.toFixed(3)); // default 1.4%
   const [extraInvestment, setExtraInvestment] = useState("0");
   const [extraFrequency, setExtraFrequency] =
@@ -68,6 +71,7 @@ export default function Home() {
     const tax = parseFloat(taxRate);
     const extraAmt = parseFloat(extraInvestment);
     const freq = FREQUENCY_MAP[extraFrequency];
+    const startYearNum = parseInt(startYear);
 
     // Validation
     if (isNaN(principal) || principal <= 0) {
@@ -82,6 +86,10 @@ export default function Home() {
       alert("Please enter a valid investment term (years) > 0");
       return;
     }
+    if (isNaN(startYearNum) || startYearNum < currentYear) {
+      alert(`Please enter a valid starting year (>= ${currentYear})`);
+      return;
+    }
     if (isNaN(tax) || tax < 0 || tax > 1) {
       alert(
         "Please enter a valid tax rate between 0 and 1 (e.g. 0.014 for 1.4%)"
@@ -94,11 +102,6 @@ export default function Home() {
     }
 
     // Effective annual net return after tax drag on portfolio value
-    // Tax drag applies on portfolio value annually (FDR method)
-    // So net annual return = gross return - tax drag
-    // tax drag = tax * portfolio value * 1 (since taxRate is effective tax rate on portfolio value)
-    // Simplified: netReturn = annualReturn - tax
-
     const netAnnualReturn = annualReturn - tax;
     if (netAnnualReturn <= 0) {
       alert(
@@ -112,22 +115,15 @@ export default function Home() {
     }
 
     // Compound growth with extra investments at frequency
-    // Calculate growth monthly/quarterly/yearly with reinvested dividends
-
     // We'll do monthly compounding for accuracy with extra contributions
     const periodsPerYear = 12;
-    const totalPeriods = term * periodsPerYear;
+    // const totalPeriods = term * periodsPerYear;
 
     // Convert netAnnualReturn to monthly rate
     const monthlyReturn = Math.pow(1 + netAnnualReturn, 1 / periodsPerYear) - 1;
 
     // Extra investment per period depends on frequency
     const extraPerPeriod = extraAmt / (periodsPerYear / freq);
-
-    // We'll calculate portfolio value at each year-end (every 12 months)
-    // For each month:
-    // 1. Portfolio grows by monthlyReturn
-    // 2. Extra investment added if month aligns with frequency
 
     let portfolioValue = principal;
     const data: ProjectionRow[] = [];
@@ -142,7 +138,6 @@ export default function Home() {
         portfolioValue = portfolioValue * (1 + monthlyReturn);
 
         // Add extra investment if month matches frequency
-        // Frequency months: monthly=every month, quarterly=months 3,6,9,12, yearly=month 12 only
         if (
           extraFrequency === "monthly" ||
           (extraFrequency === "quarterly" && month % 3 === 0) ||
@@ -157,7 +152,7 @@ export default function Home() {
       //   startBalance === 0 ? 0 : (portfolioValue / startBalance - 1) * 100;
 
       data.push({
-        year,
+        year: startYearNum + year,
         startBalance,
         endBalance: portfolioValue,
         // cagrPercent,
@@ -169,9 +164,9 @@ export default function Home() {
 
   return (
     <main className="min-h-screen p-6 bg-gray-50 flex flex-col items-center">
-      <h1 className="text-3xl font-black uppercase mb-8 bg-gradient-to-r from-indigo-500 via-pink-500 to-amber-500 text-transparent bg-clip-text">Stock Investment Calculator</h1>
+      <h1 className="text-lg md:text-3xl font-black uppercase mb-8 bg-gradient-to-r from-indigo-500 via-pink-500 to-amber-500 text-transparent bg-clip-text">Stock Investment Calculator</h1>
 
-      <Card className="max-w-4xl w-full p-6 mb-8">
+      <Card className="max-w-2xl w-full p-6 mb-8">
         <CardHeader>
           <CardTitle>Input Parameters</CardTitle>
         </CardHeader>
@@ -223,8 +218,22 @@ export default function Home() {
                 min={1}
                 step={1}
                 value={years}
+                onChange={(e) => setYears(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="startYear">Starting Year</Label>
+              <Input
+                id="startYear"
+                type="number"
+                min={currentYear}
+                max={currentYear + 100}
+                step={1}
+                value={startYear}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  setYears(e.target.value)
+                  setStartYear(e.target.value)
                 }
                 required
               />
@@ -251,9 +260,7 @@ export default function Home() {
                 max={1}
                 step={0.001}
                 value={taxRate}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  setTaxRate(e.target.value)
-                }
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTaxRate(e.target.value)}
                 required
               />
             </div>
@@ -306,7 +313,7 @@ export default function Home() {
       </Card>
 
       {projectionData.length > 0 && (
-        <Card className="max-w-4xl w-full overflow-auto">
+        <Card className="max-w-2xl w-full overflow-auto">
           <CardHeader>
             <CardTitle>Projection Breakdown</CardTitle>
           </CardHeader>
@@ -330,10 +337,10 @@ export default function Home() {
               </thead>
               <tbody>
                 {projectionData.map(
-                  ({ year, startBalance, endBalance }) => (
+                  ({ year, startBalance, endBalance }, idx) => (
                     <tr
                       key={year}
-                      className={year % 2 === 0 ? "bg-white" : "bg-gray-50"}
+                      className={idx % 2 === 0 ? "bg-white" : "bg-gray-50"}
                     >
                       <td className="border border-gray-300 px-4 py-2">
                         {year}
