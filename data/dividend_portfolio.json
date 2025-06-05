@@ -1,68 +1,79 @@
 [
   {
     "portfolioName": "SCHD",
-    "averagePriceGrowth_CAGR": 7.7,
-    "averageDividendYield": 3.5,
-    "averageDividendGrowth_CAGR": 11.19
+    "sharePriceGrowth": 7.5,
+    "dividendYield": 3.6,
+    "dividendGrowth": 11,
+    "expenseRatio": 0.06
   },
   {
     "portfolioName": "FDVV",
-    "averagePriceGrowth_CAGR": 7.2,
-    "averageDividendYield": 3.4,
-    "averageDividendGrowth_CAGR": 13.78
+    "sharePriceGrowth": 12.9,
+    "dividendYield": 2.7,
+    "dividendGrowth": 7.8,
+    "expenseRatio": 0.29
+  },
+  {
+    "portfolioName": "VYMI",
+    "sharePriceGrowth": 8,
+    "dividendYield": 4.3,
+    "dividendGrowth": 7.8,
+    "expenseRatio": 0.22
   },
   {
     "portfolioName": "DGRO",
-    "averagePriceGrowth_CAGR": 13.4,
-    "averageDividendYield": 2.5,
-    "averageDividendGrowth_CAGR": 11.04
+    "sharePriceGrowth": 0,
+    "dividendYield": 0,
+    "dividendGrowth": 0,
+    "expenseRatio": 0
   },
   {
     "portfolioName": "EUFN",
-    "averagePriceGrowth_CAGR": 13.4,
-    "averageDividendYield": 4.5,
-    "averageDividendGrowth_CAGR": 11.04
+    "sharePriceGrowth": 0,
+    "dividendYield": 0,
+    "dividendGrowth": 0,
+    "expenseRatio": 0
   },
   {
     "portfolioName": "VIG",
-    "averagePriceGrowth_CAGR": 9.1,
-    "averageDividendYield": 1.75,
-    "averageDividendGrowth_CAGR": 6.68
-  },
-  {
-    "portfolioName": "VYM",
-    "averagePriceGrowth_CAGR": 11.0,
-    "averageDividendYield": 2.7,
-    "averageDividendGrowth_CAGR": 5.5
+    "sharePriceGrowth": 0,
+    "dividendYield": 0,
+    "dividendGrowth": 0,
+    "expenseRatio": 0
   },
   {
     "portfolioName": "SCHD + DGRO",
-    "averagePriceGrowth_CAGR": 10.55,
-    "averageDividendYield": 3.0,
-    "averageDividendGrowth_CAGR": 11.12
+    "sharePriceGrowth": 0,
+    "dividendYield": 0,
+    "dividendGrowth": 0,
+    "expenseRatio": 0
   },
   {
     "portfolioName": "SCHD + EUFN",
-    "averagePriceGrowth_CAGR": 10.55,
-    "averageDividendYield": 4.0,
-    "averageDividendGrowth_CAGR": 11.12
+    "sharePriceGrowth": 0,
+    "dividendYield": 0,
+    "dividendGrowth": 0,
+    "expenseRatio": 0
   },
   {
     "portfolioName": "SCHD + VYM",
-    "averagePriceGrowth_CAGR": 9.35,
-    "averageDividendYield": 3.1,
-    "averageDividendGrowth_CAGR": 8.35
+    "sharePriceGrowth": 0,
+    "dividendYield": 0,
+    "dividendGrowth": 0,
+    "expenseRatio": 0
   },
   {
     "portfolioName": "SCHD + VIG",
-    "averagePriceGrowth_CAGR": 8.4,
-    "averageDividendYield": 2.63,
-    "averageDividendGrowth_CAGR": 8.94
+    "sharePriceGrowth": 0,
+    "dividendYield": 0,
+    "dividendGrowth": 0,
+    "expenseRatio": 0
   },
   {
     "portfolioName": "SCHD + FDVV",
-    "averagePriceGrowth_CAGR": 7.45,
-    "averageDividendYield": 3.45,
-    "averageDividendGrowth_CAGR": 12.49
+    "sharePriceGrowth": 0,
+    "dividendYield": 0,
+    "dividendGrowth": 0,
+    "expenseRatio": 0
   }
 ]
