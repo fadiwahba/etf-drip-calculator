@@ -1,7 +1,7 @@
 // app/etf-projection/page.tsx
 "use client";
 
-import { useState, useEffect, FormEvent } from "react";
+import { useState, useEffect, FormEvent, useCallback } from "react";
 import etfsData from "@/data/etfs.json"; // Local JSON file with ETF data
 import { Line } from "react-chartjs-2";
 import {
@@ -98,7 +98,7 @@ export default function ETFProjectionPage() {
   const [chartLabels, setChartLabels] = useState<string[]>([]);
 
   // Function to recalc table and chart data
-  function recalcProjections() {
+  const recalcProjections = useCallback(() => {
     const freq = freqMap[contributionFrequency];
     // For each ETF, compute effective rate = avgReturn + (drip ? dividendYield : 0)
     const table = etfsData.map((etf: ETF) => {
@@ -136,7 +136,7 @@ export default function ETFProjectionPage() {
       };
     });
     setChartDatasets(datasets);
-  }
+  }, [initialCapital, contributionFrequency, years, drip, additionalContribution]);
 
   // On first render, compute default results.
   useEffect(() => {
