@@ -5,8 +5,18 @@
       "at": "2026-08-07T05:29:49Z",
       "from": "specifying",
       "to": "implementing"
+    },
+    {
+      "at": "2026-08-07T07:24:17Z",
+      "from": "implementing",
+      "to": "reviewing"
+    },
+    {
+      "at": "2026-08-07T07:35:49Z",
+      "from": "reviewing",
+      "to": "closed"
     }
   ],
-  "phase": "implementing",
-  "updated_at": "2026-08-07T05:29:49Z"
+  "phase": "closed",
+  "updated_at": "2026-08-07T07:35:49Z"
 }
