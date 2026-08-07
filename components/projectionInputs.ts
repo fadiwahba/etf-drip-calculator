@@ -70,6 +70,11 @@ export interface ProjectionFormState {
   platformFeePercent: string;
   brokeragePerContribution: string;
   fxSpreadPercent: string;
+  // Three-phase projection (spec.md "Blank means absent"): "" maps to the engine's own
+  // `undefined` default, never to 0 (invariant 14) — parseOptionalPhaseYearField below is the one
+  // place that distinction is made.
+  contributionsStopYear: string;
+  drawdownStartYear: string;
 }
 
 export type FieldErrors = Record<string, string>;
@@ -111,6 +116,33 @@ function mustParsePir(result: PirParseResult): number | undefined {
   return result.value;
 }
 
+type OptionalPhaseYearParseResult =
+  | { ok: true; value: number | undefined }
+  | { ok: false; error: string };
+
+// AC10 (spec.md): blank is a real "unset" state, distinct from "0" — this is the one place that
+// distinction is made; a `Number("")` coercion here would silently turn "unset" into 0 and disable
+// the AC7 decumulator persona for every blank-field user. Bounded to termYears' own 0-50 range
+// (FieldConstraints below) since a phase year beyond the UI's own term cap can never be reached.
+function parseOptionalPhaseYearField(raw: string, fieldLabel: string): OptionalPhaseYearParseResult {
+  if (raw.trim() === "") {
+    return { ok: true, value: undefined };
+  }
+  const parsed = parseNumericField(raw, fieldLabel, { min: 0, max: 50, integer: true });
+  if (!parsed.ok) {
+    return { ok: false, error: parsed.error };
+  }
+  return { ok: true, value: parsed.value };
+}
+
+// Same "already checked ok:true by the caller" pattern as mustParse above.
+function mustParseOptionalPhaseYear(result: OptionalPhaseYearParseResult): number | undefined {
+  if (!result.ok) {
+    throw new Error("unreachable: mustParseOptionalPhaseYear called on a failed field parse");
+  }
+  return result.value;
+}
+
 export function buildProjectionInput(form: ProjectionFormState): BuildProjectionInputResult {
   const initialCapital = parseNumericField(form.initialCapital, "Initial Capital (NZD)", { min: 0 });
   const termYears = parseNumericField(form.termYears, "Investment Term (years)", {
@@ -139,6 +171,14 @@ export function buildProjectionInput(form: ProjectionFormState): BuildProjection
   );
   const fxSpreadPercent = parseNumericField(form.fxSpreadPercent, "FX spread (%)");
   const pirResult = parsePir(form.wrapper, form.pirPercent);
+  const contributionsStopYear = parseOptionalPhaseYearField(
+    form.contributionsStopYear,
+    "Stop contributing from year"
+  );
+  const drawdownStartYear = parseOptionalPhaseYearField(
+    form.drawdownStartYear,
+    "Start drawing dividends from year"
+  );
 
   const errors: FieldErrors = {};
   if (!initialCapital.ok) errors.initialCapital = initialCapital.error;
@@ -153,6 +193,8 @@ export function buildProjectionInput(form: ProjectionFormState): BuildProjection
   if (!brokeragePerContribution.ok) errors.brokeragePerContribution = brokeragePerContribution.error;
   if (!fxSpreadPercent.ok) errors.fxSpreadPercent = fxSpreadPercent.error;
   if (!pirResult.ok) errors.pirPercent = pirResult.error;
+  if (!contributionsStopYear.ok) errors.contributionsStopYear = contributionsStopYear.error;
+  if (!drawdownStartYear.ok) errors.drawdownStartYear = drawdownStartYear.error;
 
   if (Object.keys(errors).length > 0) {
     return { ok: false, errors };
@@ -187,6 +229,8 @@ export function buildProjectionInput(form: ProjectionFormState): BuildProjection
     pir: mustParsePir(pirResult),
     // fifThresholdNzd intentionally omitted — left at the engine default (spec: "FIF threshold
     // left at the engine default").
+    contributionsStopYear: mustParseOptionalPhaseYear(contributionsStopYear),
+    drawdownStartYear: mustParseOptionalPhaseYear(drawdownStartYear),
   };
 
   return { ok: true, value };
@@ -262,6 +306,19 @@ export function runProjection(form: ProjectionFormState): RunProjectionResult {
     return { ok: true, value: project(built.value) };
   } catch (error) {
     return { ok: false, errors: [formatEngineError(error)] };
+  }
+}
+
+// The only place a phase is turned into display text (Constitution §2 — no phase logic or string
+// mapping in the .tsx).
+export function formatPhase(phase: "accumulate" | "coast" | "draw"): string {
+  switch (phase) {
+    case "accumulate":
+      return "Accumulate";
+    case "coast":
+      return "Coast";
+    case "draw":
+      return "Draw";
   }
 }
 

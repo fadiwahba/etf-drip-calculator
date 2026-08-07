@@ -20,6 +20,7 @@ import {
   runProjection,
   seedAssumptionsFromFund,
   formatNzd,
+  formatPhase,
   type ProjectionFormState,
 } from "@/components/projectionInputs";
 // Using HTML table elements with Tailwind styling instead of shadcn/ui table components
@@ -45,6 +46,8 @@ function buildDefaultFormState(): ProjectionFormState {
     platformFeePercent: "0",
     brokeragePerContribution: "0",
     fxSpreadPercent: "0",
+    contributionsStopYear: "",
+    drawdownStartYear: "",
   };
 }
 
@@ -311,6 +314,36 @@ const InvestmentProjectionCalculator = () => {
                 />
                 <FieldError message={fieldErrors.fxSpreadPercent} />
               </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="contributionsStopYear" className="text-slate-700 font-medium">
+                  Stop contributing from year (blank = never)
+                </Label>
+                <Input
+                  id="contributionsStopYear"
+                  type="text"
+                  inputMode="numeric"
+                  value={form.contributionsStopYear}
+                  onChange={(e) => handleFieldChange("contributionsStopYear", e.target.value)}
+                  className="border-slate-300 focus:border-blue-500 focus:ring-blue-500"
+                />
+                <FieldError message={fieldErrors.contributionsStopYear} />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="drawdownStartYear" className="text-slate-700 font-medium">
+                  Start drawing dividends from year (blank = same as stop year)
+                </Label>
+                <Input
+                  id="drawdownStartYear"
+                  type="text"
+                  inputMode="numeric"
+                  value={form.drawdownStartYear}
+                  onChange={(e) => handleFieldChange("drawdownStartYear", e.target.value)}
+                  className="border-slate-300 focus:border-blue-500 focus:ring-blue-500"
+                />
+                <FieldError message={fieldErrors.drawdownStartYear} />
+              </div>
             </div>
 
             {!projection.ok && (
@@ -367,7 +400,19 @@ const InvestmentProjectionCalculator = () => {
                         {formatNzd(projection.value.netGainNzd)}
                       </p>
                     </div>
+                    <div className="text-center space-y-4">
+                      <p className="text-sm text-slate-600 font-medium mb-1">
+                        Total Income Drawn
+                      </p>
+                      <p className="text-3xl font-bold text-blue-700">
+                        {formatNzd(projection.value.totalDividendsDrawnNzd)}
+                      </p>
+                    </div>
                   </div>
+                  <p className="text-xs text-slate-500 mt-4">
+                    Net Gain excludes income already drawn — Total Income Drawn is cash paid out
+                    during Coast/Draw years, on top of Net Gain, not included in it.
+                  </p>
                 </CardContent>
               </Card>
             )}
@@ -388,12 +433,16 @@ const InvestmentProjectionCalculator = () => {
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200">
                       <th className="text-left p-3 font-semibold text-slate-700">Year</th>
+                      <th className="text-left p-3 font-semibold text-slate-700">Phase</th>
                       <th className="text-left p-3 font-semibold text-slate-700">Start Balance</th>
                       <th className="text-left p-3 font-semibold text-blue-700">Contributions</th>
                       <th className="text-left p-3 font-semibold text-emerald-700">
                         Gross Dividends
                       </th>
                       <th className="text-left p-3 font-semibold text-red-700">US WHT</th>
+                      <th className="text-left p-3 font-semibold text-emerald-700">
+                        Income Drawn
+                      </th>
                       <th className="text-left p-3 font-semibold text-red-700">Fees</th>
                       <th className="text-left p-3 font-semibold text-slate-700">Regime</th>
                       <th className="text-left p-3 font-semibold text-slate-700">
@@ -412,6 +461,7 @@ const InvestmentProjectionCalculator = () => {
                         }`}
                       >
                         <td className="p-3 font-semibold text-slate-800">{row.year}</td>
+                        <td className="p-3 text-slate-600 text-sm">{formatPhase(row.phase)}</td>
                         <td className="p-3 text-slate-600">{formatNzd(row.openingValueNzd)}</td>
                         <td className="p-3 text-blue-600 font-medium">
                           {formatNzd(row.contributionsGrossNzd)}
@@ -421,6 +471,9 @@ const InvestmentProjectionCalculator = () => {
                         </td>
                         <td className="p-3 text-red-600 font-medium">
                           {formatNzd(row.usWithholdingNzd)}
+                        </td>
+                        <td className="p-3 text-emerald-600 font-medium">
+                          {formatNzd(row.dividendsDrawnNzd)}
                         </td>
                         <td className="p-3 text-red-600 font-medium">
                           {formatNzd(row.totalFeesNzd)}

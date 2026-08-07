@@ -755,3 +755,286 @@ describe("project", () => {
     );
   });
 });
+
+// features/three-phase-projection/spec.md ACs 1-9. Named fixtures P/Q/R follow the spec's
+// convention verbatim (unlisted inputs zero / net basis / timing "start" / contributionsPerYear 1).
+describe("three-phase-projection", () => {
+  function makeFixtureP(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeInput({
+      initialShares: 1_000,
+      initialSharePriceNzd: 10,
+      sharePriceGrowth: 0.1,
+      termYears: 2,
+      initialDividendPerShareNzd: 0.55,
+      dividendGrowth: 0,
+      contributionPerEventNzd: 1_100,
+      wrapper: "direct",
+      marginalRate: 0.33,
+      usWithholdingRate: 0,
+      ...overrides,
+    });
+  }
+
+  function makeFixtureQ(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeInput({
+      initialShares: 10_000,
+      initialSharePriceNzd: 10,
+      sharePriceGrowth: 0.1,
+      termYears: 1,
+      initialDividendPerShareNzd: 0.55,
+      usWithholdingRate: 0.15,
+      wrapper: "direct",
+      marginalRate: 0.33,
+      ...overrides,
+    });
+  }
+
+  function makeFixtureR(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeInput({
+      initialShares: 10_000,
+      initialSharePriceNzd: 10,
+      sharePriceGrowth: 0.1,
+      termYears: 2,
+      initialDividendPerShareNzd: 0.55,
+      dividendGrowth: 0,
+      contributionPerEventNzd: 1_000,
+      usWithholdingRate: 0.15,
+      wrapper: "direct",
+      marginalRate: 0.33,
+      ...overrides,
+    });
+  }
+
+  // 3PP-AC1: purely-additive contract — omitting both new fields must reproduce the
+  // projection-engine AC16 golden fixture exactly, plus the new fields' inert defaults.
+  it("3PP-AC1 — omitting both fields reproduces today's output exactly", () => {
+    const result = project(
+      makeInput({
+        initialShares: 1_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 2,
+        initialDividendPerShareNzd: 0.5,
+        dividendGrowth: 0.1,
+        contributionPerEventNzd: 1_100,
+        contributionTiming: "start",
+        wrapper: "direct",
+        marginalRate: 0.33,
+      })
+    );
+    const y1 = result.rows[1];
+    expect(y1.closingValueNzd).toBeCloseTo(12_820.5, 6);
+    expect(y1.nzTaxPayableNzd).toBeCloseTo(201.465, 6);
+    expect(y1.closingValueAfterTaxNzd).toBeCloseTo(12_619.035, 6);
+    expect(y1.closingShares).toBeCloseTo(1_147.185, 6);
+
+    const y2 = result.rows[2];
+    expect(y2.grossDividendsNzd).toBeCloseTo(754.546925, 6);
+    expect(y2.closingValueNzd).toBeCloseTo(15_845.485425, 6);
+    expect(y2.nzTaxPayableNzd).toBeCloseTo(249.000485, 6);
+    expect(y2.closingValueAfterTaxNzd).toBeCloseTo(15_596.48494, 6);
+
+    expect(result.totalContributionsNzd).toBeCloseTo(2_200, 6);
+    expect(result.totalTaxNzd).toBeCloseTo(450.465485, 6);
+    expect(result.netGainNzd).toBeCloseTo(3_396.48494, 6);
+
+    for (const row of result.rows) {
+      expect(row.phase).toBe("accumulate");
+      expect(row.dividendsDrawnNzd).toBe(0);
+    }
+    expect(result.totalDividendsDrawnNzd).toBe(0);
+  });
+
+  // 3PP-AC2: a phase boundary beyond termYears is accepted and never starts — deep-equals the
+  // AC1 result exactly (a `||`/inclusive-boundary bug would change some field here).
+  it("3PP-AC2 — a value beyond the term is accepted and inert", () => {
+    const base = makeInput({
+      initialShares: 1_000,
+      initialSharePriceNzd: 10,
+      sharePriceGrowth: 0.1,
+      termYears: 2,
+      initialDividendPerShareNzd: 0.5,
+      dividendGrowth: 0.1,
+      contributionPerEventNzd: 1_100,
+      contributionTiming: "start",
+      wrapper: "direct",
+      marginalRate: 0.33,
+    });
+    const withoutFields = project(base);
+    const beyondTerm = project({ ...base, contributionsStopYear: 99, drawdownStartYear: 99 });
+    // Asserted ahead of the toEqual below: pre-implementation, `phase` is absent on both sides
+    // (undefined === undefined) so toEqual alone can pass vacuously — this pins the concrete
+    // value so the test genuinely reds before the phase field exists.
+    expect(beyondTerm.rows[1].phase).toBe("accumulate");
+    expect(beyondTerm.rows[2].phase).toBe("accumulate");
+    expect(beyondTerm).toEqual(withoutFields);
+  });
+
+  // 3PP-AC3: Coast is empty by default (draw defaults to stop, so `contributionsStopYear` alone
+  // resolves every year >= stop to "draw" — see spec.md's callout). A Coast year needs an explicit
+  // later `drawdownStartYear`; 4 > termYears 2 so Coast runs through the end of the term.
+  it("3PP-AC3 — Coast stops contributions but keeps the DRIP", () => {
+    const result = project(makeFixtureP({ contributionsStopYear: 2, drawdownStartYear: 4 }));
+    const y1 = result.rows[1];
+    expect(y1.phase).toBe("accumulate");
+    expect(y1.contributionsGrossNzd).toBeCloseTo(1_100, 6);
+    expect(y1.closingValueAfterTaxNzd).toBeCloseTo(12_619.035, 6);
+
+    const y2 = result.rows[2];
+    expect(y2.phase).toBe("coast");
+    expect(y2.contributionsGrossNzd).toBe(0);
+    expect(y2.contributionsInvestedNzd).toBe(0);
+    expect(y2.dividendsReinvestedNzd).toBeCloseTo(630.95175, 6);
+    expect(y2.dividendsDrawnNzd).toBe(0);
+    expect(y2.purchasesNzd).toBeCloseTo(630.95175, 6);
+    expect(y2.closingValueNzd).toBeCloseTo(14_511.89025, 6);
+    expect(y2.nzTaxPayableNzd).toBeCloseTo(208.2140775, 6);
+    expect(y2.closingValueAfterTaxNzd).toBeCloseTo(14_303.6761725, 6);
+    expect(y2.cumulativeContributionsNzd).toBeCloseTo(1_100, 6);
+  });
+
+  // 3PP-AC4: Draw pays the dividend out as cash; the share count is untouched by the dividend
+  // itself, but the tax settlement (byte-identical in every phase) still runs against it —
+  // closingShares is 1,129.977225, not the pre-tax 1,147.185.
+  it("3PP-AC4 — Draw pays the dividend out; principal is untouched", () => {
+    const coast = project(makeFixtureP({ contributionsStopYear: 2, drawdownStartYear: 4 }));
+    const draw = project(makeFixtureP({ contributionsStopYear: 2, drawdownStartYear: 2 }));
+    // Asserted ahead of the toEqual below: a bare toEqual would pass vacuously if `phase` were
+    // missing on both sides, so pin the concrete value first.
+    expect(draw.rows[1].phase).toBe("accumulate");
+    expect(draw.rows[1]).toEqual(coast.rows[1]);
+
+    const y2 = draw.rows[2];
+    expect(y2.phase).toBe("draw");
+    expect(y2.grossDividendsNzd).toBeCloseTo(630.95175, 6);
+    expect(y2.dividendsDrawnNzd).toBeCloseTo(630.95175, 6);
+    expect(y2.dividendsReinvestedNzd).toBe(0);
+    expect(y2.purchasesNzd).toBe(0);
+    // Pre-tax closingValueNzd is 1,147.185 x 12.1 — the dividend bought no shares. closingShares
+    // is only 1,129.977225 after the tax settlement (`shares -= nzTaxPayableNzd / closingPrice`,
+    // 208.2140775 / 12.1) runs, exactly like in every other phase.
+    expect(y2.closingValueNzd).toBeCloseTo(13_880.9385, 6);
+    expect(y2.closingShares).toBeCloseTo(1_129.977225, 6);
+    expect(y2.closingValueAfterTaxNzd).toBeCloseTo(13_672.7244225, 6);
+    expect(draw.totalDividendsDrawnNzd).toBeCloseTo(630.95175, 6);
+  });
+
+  // 3PP-AC5: below the de minimis, drawing changes nothing about the actual-dividends tax —
+  // the closingValueAfterTaxNzd gap between coast and draw is exactly the drawn cash.
+  it("3PP-AC5 — drawing does not change the tax below the de minimis", () => {
+    const coast = project(makeFixtureP({ contributionsStopYear: 2, drawdownStartYear: 4 })).rows[2];
+    const draw = project(makeFixtureP({ contributionsStopYear: 2, drawdownStartYear: 2 })).rows[2];
+    expect(coast.taxRegime).toBe("dividend");
+    expect(draw.taxRegime).toBe("dividend");
+    expect(coast.taxableIncomeNzd).toBeCloseTo(630.95175, 6);
+    expect(draw.taxableIncomeNzd).toBeCloseTo(630.95175, 6);
+    expect(coast.nzTaxPayableNzd).toBeCloseTo(208.2140775, 6);
+    expect(draw.nzTaxPayableNzd).toBeCloseTo(208.2140775, 6);
+    expect(coast.closingValueAfterTaxNzd - draw.closingValueAfterTaxNzd).toBeCloseTo(630.95175, 6);
+  });
+
+  // 3PP-AC6: above the de minimis, FDR taxes opening market value, not dividends — drawing
+  // changes neither, so the default and draw runs share identical tax figures.
+  it("3PP-AC6 — drawing does not change the tax under FIF/FDR", () => {
+    const base = project(makeFixtureQ());
+    const draw = project(makeFixtureQ({ contributionsStopYear: 1, drawdownStartYear: 1 }));
+
+    for (const r of [base.rows[1], draw.rows[1]]) {
+      expect(r.taxMethod).toBe("fdr");
+      expect(r.taxableIncomeNzd).toBeCloseTo(5_000, 6);
+      expect(r.nzTaxPayableNzd).toBeCloseTo(825, 6);
+      expect(r.totalTaxNzd).toBeCloseTo(1_650, 6);
+      expect(r.grossDividendsNzd).toBeCloseTo(5_500, 6);
+      expect(r.usWithholdingNzd).toBeCloseTo(825, 6);
+    }
+
+    const y1 = draw.rows[1];
+    expect(y1.dividendsDrawnNzd).toBeCloseTo(4_675, 6);
+    expect(y1.closingValueNzd).toBeCloseTo(110_000, 6);
+    expect(y1.costBasisNzd).toBeCloseTo(100_000, 6);
+    expect(y1.closingShares).toBeCloseTo(9_925, 6);
+    expect(y1.closingValueAfterTaxNzd).toBeCloseTo(109_175, 6);
+    expect(base.rows[1].closingValueAfterTaxNzd - y1.closingValueAfterTaxNzd).toBeCloseTo(4_675, 6);
+  });
+
+  // 3PP-AC7: contributionsStopYear 0 is the decumulator persona, not "unset" — a `||`-style
+  // falsy check would treat 0 as absent and fail every figure in this fixture.
+  it("3PP-AC7 — contributionsStopYear 0 is the decumulator, not unset", () => {
+    const result = project(makeFixtureR({ contributionsStopYear: 0 }));
+    for (const row of result.rows) {
+      expect(row.phase).toBe("draw");
+    }
+    expect(result.totalContributionsNzd).toBe(0);
+
+    const y1 = result.rows[1];
+    expect(y1.dividendsDrawnNzd).toBeCloseTo(4_675, 6);
+    expect(y1.closingValueNzd).toBeCloseTo(110_000, 6);
+    expect(y1.nzTaxPayableNzd).toBeCloseTo(825, 6);
+    expect(y1.closingValueAfterTaxNzd).toBeCloseTo(109_175, 6);
+
+    const y2 = result.rows[2];
+    expect(y2.openingValueNzd).toBeCloseTo(109_175, 6);
+    expect(y2.grossDividendsNzd).toBeCloseTo(5_458.75, 6);
+    expect(y2.usWithholdingNzd).toBeCloseTo(818.8125, 6);
+    expect(y2.dividendsDrawnNzd).toBeCloseTo(4_639.9375, 6);
+    expect(y2.closingValueNzd).toBeCloseTo(120_092.5, 6);
+    expect(y2.taxMethod).toBe("fdr");
+    expect(y2.taxableIncomeNzd).toBeCloseTo(5_458.75, 6);
+    expect(y2.nzTaxPayableNzd).toBeCloseTo(982.575, 6);
+    expect(y2.closingValueAfterTaxNzd).toBeCloseTo(119_109.925, 6);
+
+    expect(result.totalDividendsDrawnNzd).toBeCloseTo(9_314.9375, 6);
+    expect(result.netGainNzd).toBeCloseTo(19_109.925, 6);
+  });
+
+  // 3PP-AC8: invalid phase input throws, never clamps or coerces (invariant 14).
+  it("3PP-AC8 — invalid phase input throws, nothing is clamped or coerced", () => {
+    const invalidCases: Array<Partial<ProjectionInput>> = [
+      { contributionsStopYear: 2.5 },
+      { contributionsStopYear: -1 },
+      { contributionsStopYear: NaN },
+      { contributionsStopYear: Infinity },
+      { drawdownStartYear: 2.5 },
+      { drawdownStartYear: -1 },
+      { drawdownStartYear: NaN },
+      { drawdownStartYear: Infinity },
+    ];
+    for (const overrides of invalidCases) {
+      expect(() => project(makeInput(overrides)), JSON.stringify(overrides)).toThrow(
+        ProjectionInputError
+      );
+    }
+
+    let crossFieldThrown: unknown;
+    try {
+      project(makeInput({ contributionsStopYear: 3, drawdownStartYear: 2 }));
+    } catch (e) {
+      crossFieldThrown = e;
+    }
+    expect(crossFieldThrown).toBeInstanceOf(ProjectionInputError);
+    expect((crossFieldThrown as Error).message).toMatch(/contributionsStopYear/);
+    expect((crossFieldThrown as Error).message).toMatch(/drawdownStartYear/);
+
+    let omittedStopThrown: unknown;
+    try {
+      project(makeInput({ drawdownStartYear: 5 }));
+    } catch (e) {
+      omittedStopThrown = e;
+    }
+    expect(omittedStopThrown).toBeInstanceOf(ProjectionInputError);
+    expect((omittedStopThrown as Error).message).toMatch(/contributionsStopYear/);
+    expect((omittedStopThrown as Error).message).toMatch(/drawdownStartYear/);
+
+    expect(() => project(makeInput({ contributionsStopYear: 0 }))).not.toThrow();
+  });
+
+  // 3PP-AC9: no NaN/Infinity escapes the new fields, reusing the file's existing runtime-enumerated
+  // finiteness check (covers dividendsDrawnNzd/totalDividendsDrawnNzd automatically).
+  it("3PP-AC9 — no NaN/Infinity escapes the new paths", () => {
+    assertAllFinite(project(makeFixtureP({ contributionsStopYear: 2 })));
+    assertAllFinite(project(makeFixtureP({ contributionsStopYear: 2, drawdownStartYear: 2 })));
+    assertAllFinite(project(makeFixtureQ({ contributionsStopYear: 1, drawdownStartYear: 1 })));
+    assertAllFinite(project(makeFixtureR({ contributionsStopYear: 0 })));
+    assertAllFinite(project(makeInput({ termYears: 1, contributionsStopYear: 0 })));
+  });
+});

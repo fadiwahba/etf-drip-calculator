@@ -27,6 +27,12 @@ export interface ProjectionInput {
   marginalRate: number;
   pir?: number;
   fifThresholdNzd?: number;
+  // Three-phase projection (features/three-phase-projection/spec.md), both optional and additive:
+  // omitting both reproduces the pre-existing single-phase output exactly. Each field names the
+  // FIRST year of the new behaviour, not the last year of the old one — `contributionsStopYear: 5`
+  // means year 5 itself receives no contribution, not year 4.
+  contributionsStopYear?: number; // integer >= 0 — 0 is the decumulator persona (AC7), not "unset"
+  drawdownStartYear?: number; // integer >= 0 — defaults to contributionsStopYear when omitted
 }
 
 export interface ProjectionRow {
@@ -53,6 +59,11 @@ export interface ProjectionRow {
   // from the costBasisNzd delta, which cannot distinguish "DRIP included" from "DRIP omitted" in
   // every fixture (review.md F1).
   purchasesNzd: number;
+  // Three-phase projection: which phase this year ran in, and the cash paid out in a Draw year
+  // (gross dividends less US WHT — the cash actually received, gross of NZ tax since that is
+  // settled from the portfolio in every phase; spec.md "Drawn income reported gross or net").
+  phase: "accumulate" | "coast" | "draw";
+  dividendsDrawnNzd: number;
   taxRegime: "fif" | "dividend";
   taxMethod: "fdr" | "cv" | "actual-dividends";
   aboveThreshold: boolean;
@@ -72,6 +83,9 @@ export interface ProjectionResult {
   totalFeesNzd: number;
   totalTaxNzd: number;
   netGainNzd: number;
+  // netGainNzd (unchanged formula, portfolio only) excludes cash already drawn out — this field
+  // must be displayed beside it or a Draw run looks like it grew less than it actually returned.
+  totalDividendsDrawnNzd: number;
 }
 
 export class ProjectionInputError extends Error {
@@ -107,6 +121,17 @@ function assertOpenRate(value: number, field: string): void {
     throw new ProjectionInputError(
       `${field} must be a decimal strictly between -1 and 1, not a percent (e.g. 0.10, not 10)`
     );
+  }
+}
+
+// Phase-boundary years are counts, not rates: 0 is meaningful (AC7's decumulator), a fraction or
+// a negative year cannot be a "first year", so both are rejected rather than floored/clamped.
+function assertNonNegativeInteger(value: number, field: string): void {
+  if (!Number.isFinite(value)) {
+    throw new ProjectionInputError(`${field} must be a finite number`);
+  }
+  if (!Number.isInteger(value) || value < 0) {
+    throw new ProjectionInputError(`${field} must be a non-negative integer`);
   }
 }
 
@@ -165,6 +190,38 @@ function validateInput(input: ProjectionInput): void {
   assertFiniteNonNegative(input.brokeragePerContributionNzd, "brokeragePerContributionNzd");
   assertHalfOpenRate(input.fxSpreadRate, "fxSpreadRate");
   assertHalfOpenRate(input.usWithholdingRate, "usWithholdingRate");
+
+  if (input.contributionsStopYear !== undefined) {
+    assertNonNegativeInteger(input.contributionsStopYear, "contributionsStopYear");
+  }
+  if (input.drawdownStartYear !== undefined) {
+    assertNonNegativeInteger(input.drawdownStartYear, "drawdownStartYear");
+    // A drawdownStartYear with no contributionsStopYear has no "stop" to be relative to (the
+    // pseudocode's `stop` defaults to Infinity) — contributing and drawing would never be
+    // distinguishable from plain accumulation, so this is rejected rather than silently ignored.
+    if (input.contributionsStopYear === undefined) {
+      throw new ProjectionInputError(
+        "drawdownStartYear requires contributionsStopYear to also be set"
+      );
+    }
+    // Contributing and drawing in the same year is not a modelled phase (spec.md decision table) —
+    // clamping either value would silently run a plan the user did not ask for (Constitution §1).
+    if (input.drawdownStartYear < input.contributionsStopYear) {
+      throw new ProjectionInputError(
+        `drawdownStartYear (${input.drawdownStartYear}) must not be before contributionsStopYear ` +
+          `(${input.contributionsStopYear}) — contributing and drawing in the same year is not a modelled phase`
+      );
+    }
+  }
+}
+
+// The one phase decision, made once per year and reused for every downstream branch (Constitution
+// §2 — no phase logic anywhere else, including year 0). `??`, never `||`: 0 is `contributionsStopYear`'s
+// decumulator persona (AC7), and `||` would treat it as unset and never stop contributing.
+function resolvePhase(input: ProjectionInput, year: number): "accumulate" | "coast" | "draw" {
+  const stop = input.contributionsStopYear ?? Infinity;
+  const draw = input.drawdownStartYear ?? stop;
+  return year < stop ? "accumulate" : year < draw ? "coast" : "draw";
 }
 
 // Pre-growth opening snapshot (invariant 1): year 0 runs no growth, so a caller can see the
@@ -191,6 +248,11 @@ function buildYearZeroRow(input: ProjectionInput): ProjectionRow {
     dividendsReinvestedNzd: 0,
     closingValueNzd: openingValue,
     purchasesNzd: 0,
+    // Year 0 gets the same phase decision as every other year (Constitution §2 — one helper, no
+    // special-casing) — this is what makes AC7's decumulator persona ("every row is draw") true
+    // for year 0 too, not just years 1..N.
+    phase: resolvePhase(input, 0),
+    dividendsDrawnNzd: 0,
     // No tax event happens in year 0 (no income, no disposal) — these are placeholder values
     // consistent with "every flow 0", not a real computeAnnualTax result.
     taxRegime: "dividend",
@@ -222,28 +284,33 @@ export function project(input: ProjectionInput): ProjectionResult {
     // inherit the remaining growth automatically via the per-event eventPrice below, so
     // compoundingPeriodsPerYear (validated above) never re-enters the growth calculation.
     const closingPrice = openingPrice * (1 + input.sharePriceGrowth);
+    // The one phase decision for this year, made once and reused below — no second "is this a
+    // draw year" check anywhere else in the loop (Constitution §2).
+    const phase = resolvePhase(input, year);
 
     let contributionsGross = 0;
     let contributionsInvested = 0;
     let brokerageFee = 0;
     let fxSpreadCost = 0;
-    for (let k = 1; k <= input.contributionsPerYear; k++) {
-      // Contribution timing is applied per event (invariant 4): "start" credits growth from the
-      // beginning of the period the event falls in, "end" credits none yet — never averaged or
-      // credited in bulk at year start.
-      const f =
-        input.contributionTiming === "start"
-          ? (k - 1) / input.contributionsPerYear
-          : k / input.contributionsPerYear;
-      const eventPrice = openingPrice * Math.pow(1 + input.sharePriceGrowth, f);
-      const perEvent = input.contributionPerEventNzd;
-      const fx = (perEvent - input.brokeragePerContributionNzd) * input.fxSpreadRate;
-      const invested = perEvent - input.brokeragePerContributionNzd - fx;
-      shares += invested / eventPrice;
-      contributionsGross += perEvent;
-      contributionsInvested += invested;
-      brokerageFee += input.brokeragePerContributionNzd;
-      fxSpreadCost += fx;
+    if (phase === "accumulate") {
+      for (let k = 1; k <= input.contributionsPerYear; k++) {
+        // Contribution timing is applied per event (invariant 4): "start" credits growth from the
+        // beginning of the period the event falls in, "end" credits none yet — never averaged or
+        // credited in bulk at year start.
+        const f =
+          input.contributionTiming === "start"
+            ? (k - 1) / input.contributionsPerYear
+            : k / input.contributionsPerYear;
+        const eventPrice = openingPrice * Math.pow(1 + input.sharePriceGrowth, f);
+        const perEvent = input.contributionPerEventNzd;
+        const fx = (perEvent - input.brokeragePerContributionNzd) * input.fxSpreadRate;
+        const invested = perEvent - input.brokeragePerContributionNzd - fx;
+        shares += invested / eventPrice;
+        contributionsGross += perEvent;
+        contributionsInvested += invested;
+        brokerageFee += input.brokeragePerContributionNzd;
+        fxSpreadCost += fx;
+      }
     }
 
     // Dividend grows per share, not as a yield (invariant 6) — yield falls out as
@@ -252,9 +319,15 @@ export function project(input: ProjectionInput): ProjectionResult {
     // Dividends pay once at year end, on the post-contribution share count.
     const grossDividends = shares * dividendPerShare;
     const usWithholding = grossDividends * input.usWithholdingRate;
-    // DRIP does not defer tax: the investor owes NZ tax on this income in the year it arises even
-    // though dripCash below never reaches them as cash (nz-tax.md "Tax on reinvested dividends").
-    const dividendsReinvested = grossDividends - usWithholding;
+    // A Draw year pays the dividend out instead of reinvesting it — the share count does not grow
+    // from it (spec.md "Draw pays the dividend out; principal is untouched"). Everywhere else
+    // (growth, fees, the tax call and its arguments, the tax settlement below) is byte-identical
+    // across all three phases: NZ taxes a deemed/actual return, not received dividends, so paying
+    // cash out instead of reinvesting it is not a new taxable event and does not change the tax
+    // (nz-tax.md "Tax on reinvested dividends").
+    const isDraw = phase === "draw";
+    const dividendsReinvested = isDraw ? 0 : grossDividends - usWithholding;
+    const dividendsDrawn = isDraw ? grossDividends - usWithholding : 0;
     shares += dividendsReinvested / closingPrice;
 
     // Fee drag reduces the share count, never the displayed value only (invariant 8) — that is
@@ -316,6 +389,8 @@ export function project(input: ProjectionInput): ProjectionResult {
       dividendsReinvestedNzd: dividendsReinvested,
       closingValueNzd: closingValue,
       purchasesNzd: purchases,
+      phase,
+      dividendsDrawnNzd: dividendsDrawn,
       taxRegime: tax.regime,
       taxMethod: tax.method,
       aboveThreshold: tax.aboveThreshold,
@@ -347,6 +422,7 @@ export function project(input: ProjectionInput): ProjectionResult {
     totalFeesNzd: rows.reduce((sum, row) => sum + row.totalFeesNzd, 0),
     totalTaxNzd: rows.reduce((sum, row) => sum + row.totalTaxNzd, 0),
     netGainNzd,
+    totalDividendsDrawnNzd: rows.reduce((sum, row) => sum + row.dividendsDrawnNzd, 0),
   };
 }
 

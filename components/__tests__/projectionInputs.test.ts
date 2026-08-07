@@ -6,6 +6,7 @@ import {
   runProjection,
   formatEngineError,
   formatNzd,
+  formatPhase,
   type ProjectionFormState,
 } from "@/components/projectionInputs";
 import { getFund, MissingAssumptionError } from "@/lib/funds";
@@ -27,6 +28,8 @@ function makeForm(overrides: Partial<ProjectionFormState> = {}): ProjectionFormS
     platformFeePercent: "0",
     brokeragePerContribution: "0",
     fxSpreadPercent: "0",
+    contributionsStopYear: "",
+    drawdownStartYear: "",
     ...overrides,
   };
 }
@@ -256,5 +259,63 @@ describe("AC14 — NaN/Infinity cannot print", () => {
 
   it("formatNzd renders a normal finite number", () => {
     expect(formatNzd(1234.5)).toBe("$1,235");
+  });
+});
+
+// features/three-phase-projection/spec.md ACs 10-13.
+describe("three-phase-projection mapper", () => {
+  // 3PP-AC10: blank means absent, "0" means zero — a `||`-style falsy check would treat "0" as
+  // absent too and silently drop the decumulator persona.
+  it("3PP-AC10 — blank means absent, '0' means zero", () => {
+    const blank = buildProjectionInput(makeForm({ contributionsStopYear: "" }));
+    expect(blank.ok).toBe(true);
+    if (blank.ok) expect(blank.value.contributionsStopYear).toBeUndefined();
+
+    const zero = buildProjectionInput(makeForm({ contributionsStopYear: "0" }));
+    expect(zero.ok).toBe(true);
+    if (zero.ok) expect(zero.value.contributionsStopYear).toBe(0);
+
+    const five = buildProjectionInput(
+      makeForm({ contributionsStopYear: "5", drawdownStartYear: "" })
+    );
+    expect(five.ok).toBe(true);
+    if (five.ok) {
+      expect(five.value.contributionsStopYear).toBe(5);
+      // The mapper never fills in the engine's own default (Constitution §2) — the built input
+      // must carry `undefined` through, not a pre-computed "= contributionsStopYear" value.
+      expect(five.value.drawdownStartYear).toBeUndefined();
+    }
+  });
+
+  // 3PP-AC11: phase fields validate without coercion — no field silently becomes 0 or NaN.
+  it("3PP-AC11 — phase fields validate without coercion", () => {
+    for (const bad of ["abc", "-1", "2.5", "60"]) {
+      const result = buildProjectionInput(makeForm({ contributionsStopYear: bad }));
+      expect(result.ok, `contributionsStopYear="${bad}" should be rejected`).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.contributionsStopYear).toBeTruthy();
+      }
+    }
+  });
+
+  // 3PP-AC12: the engine's cross-field ProjectionInputError surfaces verbatim through
+  // runProjection, not caught/reworded by the mapper (Constitution §2).
+  it("3PP-AC12 — the cross-field error surfaces verbatim", () => {
+    const result = runProjection(
+      makeForm({ contributionsStopYear: "5", drawdownStartYear: "3" })
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatch(/^ProjectionInputError: /);
+    expect(result.errors[0]).toContain("contributionsStopYear");
+    expect(result.errors[0]).toContain("drawdownStartYear");
+  });
+
+  // 3PP-AC13: formatPhase is the only place a phase label is formatted — no ".tsx" string mapping.
+  it("3PP-AC13 — formatPhase labels the three phases", () => {
+    expect(formatPhase("accumulate")).toBe("Accumulate");
+    expect(formatPhase("coast")).toBe("Coast");
+    expect(formatPhase("draw")).toBe("Draw");
   });
 });
