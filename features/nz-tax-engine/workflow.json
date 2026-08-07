@@ -5,8 +5,28 @@
       "at": "2026-08-07T03:42:51Z",
       "from": "specifying",
       "to": "implementing"
+    },
+    {
+      "at": "2026-08-07T03:47:44Z",
+      "from": "implementing",
+      "to": "reviewing"
+    },
+    {
+      "at": "2026-08-07T03:52:21Z",
+      "from": "reviewing",
+      "to": "implementing"
+    },
+    {
+      "at": "2026-08-07T03:55:00Z",
+      "from": "implementing",
+      "to": "reviewing"
+    },
+    {
+      "at": "2026-08-07T03:57:07Z",
+      "from": "reviewing",
+      "to": "closed"
     }
   ],
-  "phase": "implementing",
-  "updated_at": "2026-08-07T03:42:51Z"
+  "phase": "closed",
+  "updated_at": "2026-08-07T03:57:07Z"
 }
