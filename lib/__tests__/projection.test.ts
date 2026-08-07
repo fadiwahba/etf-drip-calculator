@@ -40,48 +40,20 @@ function makeInput(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
 }
 
 // Invariant 13/AC19: NaN/Infinity must never escape a calculation into a row or the summary.
-const NUMERIC_ROW_FIELDS: (keyof ProjectionRow)[] = [
-  "year",
-  "openingShares",
-  "closingShares",
-  "openingSharePriceNzd",
-  "closingSharePriceNzd",
-  "openingValueNzd",
-  "contributionsGrossNzd",
-  "contributionsInvestedNzd",
-  "brokerageFeeNzd",
-  "fxSpreadCostNzd",
-  "expenseFeeNzd",
-  "platformFeeNzd",
-  "totalFeesNzd",
-  "dividendPerShareNzd",
-  "grossDividendsNzd",
-  "usWithholdingNzd",
-  "dividendsReinvestedNzd",
-  "closingValueNzd",
-  "taxableIncomeNzd",
-  "nzTaxPayableNzd",
-  "totalTaxNzd",
-  "closingValueAfterTaxNzd",
-  "cumulativeContributionsNzd",
-  "costBasisNzd",
-];
-const NUMERIC_SUMMARY_FIELDS: (keyof ProjectionResult)[] = [
-  "initialInvestmentNzd",
-  "totalContributionsNzd",
-  "finalValueNzd",
-  "totalFeesNzd",
-  "totalTaxNzd",
-  "netGainNzd",
-];
-
+// The field list is derived at runtime, not hardcoded (review.md F3) — a hardcoded list silently
+// stops covering any numeric field added to ProjectionRow/ProjectionResult later (it already
+// missed `purchasesNzd` once). Deriving it also means a stub with missing rows/fields goes RED.
 function assertAllFinite(result: ProjectionResult): void {
-  for (const field of NUMERIC_SUMMARY_FIELDS) {
-    expect(Number.isFinite(result[field] as number)).toBe(true);
+  for (const [key, value] of Object.entries(result)) {
+    if (typeof value === "number") {
+      expect(Number.isFinite(value), `summary.${key}`).toBe(true);
+    }
   }
   for (const row of result.rows) {
-    for (const field of NUMERIC_ROW_FIELDS) {
-      expect(Number.isFinite(row[field] as number)).toBe(true);
+    for (const [key, value] of Object.entries(row)) {
+      if (typeof value === "number") {
+        expect(Number.isFinite(value), `row.${key} (year ${row.year})`).toBe(true);
+      }
     }
   }
 }
@@ -284,6 +256,31 @@ describe("project", () => {
     expect(result.rows[3].closingShares).toBeCloseTo(970.299, 6);
   });
 
+  // AC8b: the fee base is the post-DRIP closing value, not opening value — AC8's g=0,
+  // no-dividend fixture can't tell the two apart since they're equal there (review.md F2).
+  // With g 0.10 and a dividend: closingPrice 11, dividend 500 → 1000 + 500/11 shares,
+  // valueBeforeFees = 11,500 exactly (not the 10,000 opening value); expenseFee = 1% × 11,500 =
+  // 115, platformFee = 0.2% × 11,500 = 23.
+  it("AC8b — fee base is the post-DRIP closing value, not opening value", () => {
+    const result = project(
+      makeInput({
+        initialShares: 1000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 1,
+        initialDividendPerShareNzd: 0.5,
+        growthBasis: "gross-of-expense-ratio",
+        expenseRatioAnnual: 0.01,
+        platformFeeAnnualRate: 0.002,
+        wrapper: "direct",
+        marginalRate: 0.33,
+      })
+    );
+    const row = result.rows[1];
+    expect(row.expenseFeeNzd).toBeCloseTo(115, 6);
+    expect(row.platformFeeNzd).toBeCloseTo(23, 6);
+  });
+
   // AC9: brokerage and FX spread are charged on every contribution (calculator-invariants.md #9).
   it("AC9 — brokerage and FX spread are charged on every contribution", () => {
     const base = makeInput({
@@ -375,9 +372,12 @@ describe("project", () => {
     expect(row.closingValueAfterTaxNzd).toBeCloseTo(113_850, 6);
   });
 
-  // AC13: a reinvested dividend counts as a purchase in the CV base — omitting it would still
-  // pick FDR here (CV stays above FDR either way), so the direct check is the cost-basis delta,
-  // not the method chosen (calculator-invariants.md #11, "Comparative Value").
+  // AC13: a reinvested dividend counts as a purchase in the CV base. `purchasesNzd` is pinned
+  // directly (review.md F1) — the costBasisNzd-delta proxy previously used here cannot
+  // distinguish "DRIP included" from "DRIP omitted" in this fixture, because FDR 5,000 is the
+  // lower figure either way (CV 15,500 with the DRIP, 20,175 without) — AC13b below is the
+  // fixture where the FDR/CV choice actually flips (calculator-invariants.md #11, "Comparative
+  // Value").
   it("AC13 — a reinvested dividend counts as a purchase in the CV base", () => {
     const result = project(
       makeInput({
@@ -392,10 +392,39 @@ describe("project", () => {
       })
     );
     const row = result.rows[1];
+    expect(row.purchasesNzd).toBeCloseTo(4_675, 6);
     const purchasesFedToTax = row.costBasisNzd - 100_000;
     expect(purchasesFedToTax).toBeCloseTo(4_675, 6);
     expect(row.taxMethod).toBe("fdr");
     expect(row.taxableIncomeNzd).toBeCloseTo(5_000, 6);
+  });
+
+  // AC13b: a discriminating fixture for the same invariant — AC13's growth (+10%) leaves CV above
+  // FDR whether or not the DRIP is in the CV base, so it can't catch the DRIP being dropped from
+  // `purchasesNzd`. A falling share price (-1%) does: with the DRIP in the CV base, CV = 4,500 <
+  // FDR 5,000 → "cv"; omit the DRIP and CV rises to 9,175 > FDR 5,000 → flips to "fdr" (review.md
+  // F1, reviewer-supplied fixture).
+  it("AC13b — omitting the DRIP from the CV base would flip FDR/CV here", () => {
+    const result = project(
+      makeInput({
+        initialShares: 10_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: -0.01,
+        termYears: 1,
+        initialDividendPerShareNzd: 0.55,
+        usWithholdingRate: 0.15,
+        wrapper: "direct",
+        marginalRate: 0.33,
+      })
+    );
+    const row = result.rows[1];
+    expect(row.closingValueNzd).toBeCloseTo(103_675, 6);
+    expect(row.purchasesNzd).toBeCloseTo(4_675, 6);
+    expect(row.costBasisNzd).toBeCloseTo(104_675, 6);
+    expect(row.taxMethod).toBe("cv");
+    expect(row.taxableIncomeNzd).toBeCloseTo(4_500, 6);
+    expect(row.nzTaxPayableNzd).toBeCloseTo(660, 6);
+    expect(row.totalTaxNzd).toBeCloseTo(1_485, 6);
   });
 
   // AC14: the wrapper is passed through, never re-derived (calculator-invariants.md #10).
@@ -552,43 +581,176 @@ describe("project", () => {
     expect(thrown).not.toBeInstanceOf(ProjectionInputError);
   });
 
-  // AC19: no NaN/Infinity escapes any row or the summary, across the pinned fixtures and the
-  // degenerate cases (calculator-invariants.md #13).
+  // AC19: no NaN/Infinity escapes any row or the summary, for every fixture above plus the
+  // degenerate cases (calculator-invariants.md #13). Previously only 3 of 16 fixtures were run
+  // through this check — tax, brokerage/FX and fee paths were never finiteness-checked
+  // (review.md F3). Each fixture below is the exact input from its named AC.
   it("AC19 — no NaN/Infinity escapes any row or the summary", () => {
+    const fixtures: ProjectionInput[] = [
+      // AC1/AC2 — N-year compounding.
+      makeInput({ initialShares: 1_000, initialSharePriceNzd: 10, sharePriceGrowth: 0.1, termYears: 3 }),
+      // AC3 — deposit cadence independent of the growth model.
+      makeInput({
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 2,
+        contributionPerEventNzd: 100,
+        contributionsPerYear: 12,
+      }),
+      // AC4 — per-event contribution timing.
+      makeInput({
+        initialShares: 0,
+        initialSharePriceNzd: 100,
+        sharePriceGrowth: 0.21,
+        termYears: 1,
+        contributionsPerYear: 2,
+        contributionPerEventNzd: 121,
+        contributionTiming: "end",
+      }),
+      // AC6 — dividend grown per share.
+      makeInput({
+        initialShares: 1_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 3,
+        initialDividendPerShareNzd: 0.5,
+        dividendGrowth: 0.2,
+      }),
+      // AC7 — gross-of-expense-ratio expense charge.
+      makeInput({
+        initialShares: 1_000,
+        initialSharePriceNzd: 10,
+        termYears: 2,
+        growthBasis: "gross-of-expense-ratio",
+        expenseRatioAnnual: 0.0006,
+      }),
+      // AC8 — fee drag through the share count.
+      makeInput({
+        initialShares: 1_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0,
+        termYears: 3,
+        growthBasis: "gross-of-expense-ratio",
+        expenseRatioAnnual: 0.01,
+      }),
+      // AC8b — fee base with non-zero growth and a dividend (F2).
+      makeInput({
+        initialShares: 1_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 1,
+        initialDividendPerShareNzd: 0.5,
+        growthBasis: "gross-of-expense-ratio",
+        expenseRatioAnnual: 0.01,
+        platformFeeAnnualRate: 0.002,
+        wrapper: "direct",
+        marginalRate: 0.33,
+      }),
+      // AC9 — brokerage and FX spread, charged per contribution.
+      makeInput({
+        initialShares: 0,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0,
+        termYears: 1,
+        contributionsPerYear: 4,
+        contributionPerEventNzd: 1_000,
+        brokeragePerContributionNzd: 3,
+        fxSpreadRate: 0.005,
+        contributionTiming: "end",
+      }),
+      // AC10 — contributions are not returns.
+      makeInput({
+        initialShares: 1_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0,
+        termYears: 2,
+        contributionPerEventNzd: 1_000,
+      }),
+      // AC11/AC12/AC13 — FIF, FDR tax path.
+      makeInput({
+        initialShares: 10_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 1,
+        initialDividendPerShareNzd: 0.55,
+        usWithholdingRate: 0.15,
+        wrapper: "direct",
+        marginalRate: 0.33,
+      }),
+      // AC13b — FIF, CV tax path (F1 discriminating fixture).
+      makeInput({
+        initialShares: 10_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: -0.01,
+        termYears: 1,
+        initialDividendPerShareNzd: 0.55,
+        usWithholdingRate: 0.15,
+        wrapper: "direct",
+        marginalRate: 0.33,
+      }),
+      // AC14 — PIE wrapper tax path.
+      makeInput({
+        initialShares: 10_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 1,
+        initialDividendPerShareNzd: 0.55,
+        usWithholdingRate: 0.15,
+        wrapper: "pie",
+        pir: 0.33,
+        marginalRate: 0.33,
+      }),
+      // AC15 — de minimis crossing mid-projection.
+      makeInput({
+        initialShares: 4_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 2,
+        contributionPerEventNzd: 6_600,
+        wrapper: "direct",
+        marginalRate: 0.33,
+      }),
+      // AC16 — golden 2-year end-to-end.
+      makeInput({
+        initialShares: 1_000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 2,
+        initialDividendPerShareNzd: 0.5,
+        dividendGrowth: 0.1,
+        contributionPerEventNzd: 1_100,
+        contributionTiming: "start",
+        wrapper: "direct",
+        marginalRate: 0.33,
+      }),
+      // Degenerate cases: termYears 1, initialShares 0, contributionPerEventNzd 0, g 0, d0 0 — all
+      // defaults in makeInput() already.
+      makeInput({ termYears: 1 }),
+    ];
+    for (const fixture of fixtures) {
+      assertAllFinite(project(fixture));
+    }
+    // AC5 — projectFund's fund-derived growth path.
     assertAllFinite(
-      project(makeInput({ initialShares: 1000, initialSharePriceNzd: 10, sharePriceGrowth: 0.1, termYears: 3 }))
+      projectFund(getFund("SCHD"), {
+        termYears: 1,
+        compoundingPeriodsPerYear: 1,
+        contributionsPerYear: 1,
+        contributionTiming: "start",
+        initialShares: 0,
+        initialSharePriceNzd: 10,
+        contributionPerEventNzd: 0,
+        initialDividendPerShareNzd: 0,
+        dividendGrowth: 0,
+        growthBasis: "net-of-expense-ratio",
+        expenseRatioAnnual: 0,
+        platformFeeAnnualRate: 0,
+        brokeragePerContributionNzd: 0,
+        fxSpreadRate: 0,
+        usWithholdingRate: 0,
+        wrapper: "direct",
+        marginalRate: 0.33,
+      })
     );
-    assertAllFinite(
-      project(
-        makeInput({
-          initialShares: 1000,
-          initialSharePriceNzd: 10,
-          sharePriceGrowth: 0.1,
-          termYears: 2,
-          initialDividendPerShareNzd: 0.5,
-          dividendGrowth: 0.1,
-          contributionPerEventNzd: 1_100,
-          contributionTiming: "start",
-          wrapper: "direct",
-          marginalRate: 0.33,
-        })
-      )
-    );
-    assertAllFinite(
-      project(
-        makeInput({
-          initialShares: 4_000,
-          initialSharePriceNzd: 10,
-          sharePriceGrowth: 0.1,
-          termYears: 2,
-          contributionPerEventNzd: 6_600,
-          wrapper: "direct",
-          marginalRate: 0.33,
-        })
-      )
-    );
-    // Degenerate cases: termYears 1, initialShares 0, contributionPerEventNzd 0, g 0, d0 0 — all
-    // defaults in makeInput() already.
-    assertAllFinite(project(makeInput({ termYears: 1 })));
   });
 });

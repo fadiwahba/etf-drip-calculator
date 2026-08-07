@@ -48,6 +48,11 @@ export interface ProjectionRow {
   usWithholdingNzd: number;
   dividendsReinvestedNzd: number;
   closingValueNzd: number;
+  // The amount fed to computeAnnualTax's purchasesNzd field (contributions + DRIP) — exposed as
+  // its own field so a test can pin the CV base directly (invariant 11) instead of inferring it
+  // from the costBasisNzd delta, which cannot distinguish "DRIP included" from "DRIP omitted" in
+  // every fixture (review.md F1).
+  purchasesNzd: number;
   taxRegime: "fif" | "dividend";
   taxMethod: "fdr" | "cv" | "actual-dividends";
   aboveThreshold: boolean;
@@ -185,6 +190,7 @@ function buildYearZeroRow(input: ProjectionInput): ProjectionRow {
     usWithholdingNzd: 0,
     dividendsReinvestedNzd: 0,
     closingValueNzd: openingValue,
+    purchasesNzd: 0,
     // No tax event happens in year 0 (no income, no disposal) — these are placeholder values
     // consistent with "every flow 0", not a real computeAnnualTax result.
     taxRegime: "dividend",
@@ -309,6 +315,7 @@ export function project(input: ProjectionInput): ProjectionResult {
       usWithholdingNzd: usWithholding,
       dividendsReinvestedNzd: dividendsReinvested,
       closingValueNzd: closingValue,
+      purchasesNzd: purchases,
       taxRegime: tax.regime,
       taxMethod: tax.method,
       aboveThreshold: tax.aboveThreshold,
