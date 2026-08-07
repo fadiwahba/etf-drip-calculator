@@ -342,6 +342,14 @@ describe("computeAnnualTax", () => {
       );
       expect(() => computeAnnualTax({ ...valid, fifThresholdNzd: -100 })).toThrow(TaxInputError);
     });
+
+    // The wrapper decides the rate (PIR-capped 28% vs marginal), so an unrecognised value must
+    // not fall through to the direct branch and return a plausible wrong number.
+    it("throws on an unrecognised wrapper instead of falling back to the marginal rate", () => {
+      const bad = { ...valid, wrapper: "PIE" as unknown as TaxYearInput["wrapper"] };
+      expect(() => computeAnnualTax(bad)).toThrow(TaxInputError);
+      expect(() => computeAnnualTax(bad)).toThrow(/wrapper/);
+    });
   });
 
   // AC11: no NaN/Infinity escapes for any valid fixture — checked inline via expectAllFinite

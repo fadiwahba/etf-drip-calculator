@@ -36,7 +36,7 @@ See the full audit: [docs/AUDIT-2026-08-06.md](docs/AUDIT-2026-08-06.md)
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20.19+ (Vitest 4 / Vite 8 require `^20.19 || >=22.12`)
 - pnpm (install via `npm install -g pnpm`)
 
 ### Installation
@@ -56,8 +56,11 @@ Open [http://localhost:3000](http://localhost:3000) to see the app.
 | `pnpm build` | Production build |
 | `pnpm start` | Run production build locally |
 | `pnpm lint` | Run ESLint (must pass before commit) |
+| `pnpm test` | Run the Vitest suite once |
+| `pnpm test:watch` | Vitest in watch mode |
+| `pnpm test:coverage` | Coverage report (scoped to `lib/`) |
 
-Note: There is no test runner installed. Adding one is a prerequisite for trusting any fix to the calculation layer.
+Note: Vitest is the test runner. TDD is mandatory for anything under `lib/` — see `docs/CONSTITUTION.md`.
 
 ## Project structure
 
@@ -98,7 +101,7 @@ The code follows strict conventions:
 
 - No FX modelling; no brokerage or platform fees modelled
 - Four divergent tax models across different components (consolidated fix needed)
-- No test infrastructure
+- Test coverage is limited to `lib/nzTax.ts`; the projection and UI layers have none yet
 - Silent zero-coercion of empty form fields (inputs should validate)
 - Dead code present (InvestmentCalculator, DetailsTable, GrowthColumnChart unused)
 

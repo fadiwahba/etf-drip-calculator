@@ -53,8 +53,8 @@ pnpm build    # production build
 pnpm lint     # ESLint — must pass clean
 ```
 
-There is **no test runner installed.** Adding one is a prerequisite for trusting any fix to the
-calculation layer, not a nice-to-have.
+**Vitest** is the test runner (`pnpm test`). **TDD is mandatory for `lib/`** — a failing test before
+the fix, every time. UI-only slices may relax it; see `docs/CONSTITUTION.md`.
 
 ## Conventions
 

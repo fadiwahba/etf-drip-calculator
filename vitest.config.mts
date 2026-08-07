@@ -18,6 +18,8 @@ export default defineConfig({
   },
   resolve: {
     // Mirrors the `@/*` -> project root alias in tsconfig.json.
-    alias: { "@": path.resolve(__dirname, "./") },
+    // `import.meta.dirname`, not `__dirname`: this is an ESM config (.mts) and
+    // Vite's native config loader does not shim CJS globals.
+    alias: { "@": path.resolve(import.meta.dirname, "./") },
   },
 });

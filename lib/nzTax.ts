@@ -92,6 +92,12 @@ function resolvePir(input: TaxYearInput): number {
 }
 
 function validateInput(input: TaxYearInput): void {
+  // Checked at runtime, not just by the type: the wrapper decides the rate (PIR-capped 28% vs
+  // marginal), so an unrecognised string silently falling through to the direct branch would
+  // return a plausible wrong number for a JSON/untyped caller. Fail loudly instead.
+  if (input.wrapper !== "pie" && input.wrapper !== "direct") {
+    throw new TaxInputError('wrapper must be "pie" or "direct"');
+  }
   assertFiniteMoney(input.foreignCostNzd, "foreignCostNzd");
   assertFiniteMoney(input.openingValueNzd, "openingValueNzd");
   assertFiniteMoney(input.closingValueNzd, "closingValueNzd");
