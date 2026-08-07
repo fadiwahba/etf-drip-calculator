@@ -187,6 +187,7 @@ describe("computeAnnualTax", () => {
       marginalRate: 0.33,
     });
     expect(withoutOverride.regime).toBe("fif");
+    expectAllFinite(withoutOverride);
   });
 
   // AC9: threshold crossing is decided year by year — each independent call to computeAnnualTax
@@ -235,6 +236,52 @@ describe("computeAnnualTax", () => {
     expectAllFinite(y1);
     expectAllFinite(y2);
     expectAllFinite(y3);
+  });
+
+  // Boundary on AC1/AC7's de minimis test: nz-tax.md says "cost ≤ NZ$50,000 → FIF does not apply",
+  // so a cost exactly at the threshold must stay in the dividend regime, and one cent over must
+  // cross into FIF. Locks the `>` comparison at nzTax.ts:135 against being "tidied" to `>=`.
+  it("boundary — cost exactly at the de minimis threshold stays below it; one cent over crosses it", () => {
+    const atThreshold = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 50_000,
+      openingValueNzd: 0,
+      closingValueNzd: 0,
+      grossDividendsNzd: 1_000,
+      marginalRate: 0.33,
+    });
+    expect(atThreshold.regime).toBe("dividend");
+    expect(atThreshold.aboveThreshold).toBe(false);
+    expectAllFinite(atThreshold);
+
+    const justOverThreshold = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 50_000.01,
+      openingValueNzd: 100_000,
+      closingValueNzd: 100_000,
+      grossDividendsNzd: 1_000,
+      marginalRate: 0.33,
+    });
+    expect(justOverThreshold.regime).toBe("fif");
+    expect(justOverThreshold.aboveThreshold).toBe(true);
+    expectAllFinite(justOverThreshold);
+  });
+
+  // Boundary on AC4's lower-of rule: spec.md says "Exact tie → method: fdr". Locks the `<=`
+  // comparison at nzTax.ts:160 against being "tidied" to `<`, which would silently flip the
+  // reported method on a tie without changing the taxable amount.
+  it("boundary — FDR = CV exact tie resolves to method fdr, per spec", () => {
+    const result = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 200_000,
+      openingValueNzd: 200_000,
+      closingValueNzd: 210_000,
+      grossDividendsNzd: 0,
+      marginalRate: 0.33,
+    });
+    expect(result.method).toBe("fdr");
+    expect(result.taxableIncomeNzd).toBeCloseTo(10_000, 6);
+    expectAllFinite(result);
   });
 
   // AC10: invalid input fails loudly — never coerced to 0 (invariant 14).

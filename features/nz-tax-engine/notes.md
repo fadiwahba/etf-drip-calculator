@@ -116,3 +116,98 @@ After implementing `lib/nzTax.ts`, ran `pnpm test` again:
 
 All 18 tests pass, covering AC1–AC12 (AC10 split into 7 field-level sub-cases, AC11 both inlined via
 a shared `expectAllFinite` helper on every fixture above and as its own dedicated test).
+
+## Cycle 1
+
+Fix cycle for `review.md` verdict NEEDS_FIXES. Test-only — `lib/nzTax.ts` ends this cycle
+byte-identical to how it started (`git diff lib/nzTax.ts` is empty, pasted below). Only
+`lib/__tests__/nzTax.test.ts` changed. Three findings addressed:
+
+- **F1 — de minimis boundary (`nzTax.ts:135`).** Added a fixture pinning `foreignCostNzd === 50_000`
+  (default threshold) to `regime: "dividend"`, `aboveThreshold: false`, and `50_000.01` to
+  `regime: "fif"`, `aboveThreshold: true`. Locks the existing `>` comparison — the correct reading
+  per `.claude/rules/nz-tax.md` ("cost ≤ NZ$50,000 → FIF does not apply"). No code change.
+- **F2 — exact FDR = CV tie (`nzTax.ts:160`).** Added a fixture with opening 200,000, closing
+  210,000, dividends 0 → FDR = CV = 10,000 exactly, asserting `method: "fdr"` and taxable 10,000 per
+  `spec.md:41`. Locks the existing `<=` comparison. No code change.
+- **F3 — AC11 gap.** Added the missing `expectAllFinite(withoutOverride)` call to the AC8
+  `withoutOverride` fixture (`nzTax.test.ts:181-190`) — one line, no new fixture needed.
+
+### RED — F1 (de minimis boundary)
+
+Temporarily flipped `nzTax.ts:135` from `input.foreignCostNzd > fifThresholdNzd` to `>=`, ran
+`pnpm test`:
+
+```
+❯ lib/__tests__/nzTax.test.ts (20 tests | 1 failed) 8ms
+   × boundary — cost exactly at the de minimis threshold stays below it; one cent over crosses it 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  lib/__tests__/nzTax.test.ts > computeAnnualTax > boundary — cost exactly at the de minimis
+threshold stays below it; one cent over crosses it
+AssertionError: expected 'fif' to be 'dividend' // Object.is equality
+
+Expected: "dividend"
+Received: "fif"
+
+ ❯ lib/__tests__/nzTax.test.ts:253:32
+    253|     expect(atThreshold.regime).toBe("dividend");
+       |                                ^
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 19 passed (20)
+```
+
+Reverted `>=` back to `>` (the correct, spec-matching operator).
+
+### RED — F2 (FDR = CV tie)
+
+Temporarily flipped `nzTax.ts:160` from `fdrIncome <= cv ? "fdr" : "cv"` to `<`, ran `pnpm test`:
+
+```
+❯ lib/__tests__/nzTax.test.ts (20 tests | 1 failed) 9ms
+   × boundary — FDR = CV exact tie resolves to method fdr, per spec 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  lib/__tests__/nzTax.test.ts > computeAnnualTax > boundary — FDR = CV exact tie resolves to
+method fdr, per spec
+AssertionError: expected 'cv' to be 'fdr' // Object.is equality
+
+Expected: "fdr"
+Received: "cv"
+
+ ❯ lib/__tests__/nzTax.test.ts:282:27
+    282|     expect(result.method).toBe("fdr");
+       |                           ^
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 19 passed (20)
+```
+
+Reverted `<` back to `<=` (the correct, spec-matching operator, matching `spec.md:41`'s "Exact tie →
+`method: fdr`").
+
+### GREEN
+
+With both operators reverted and the F3 one-line addition in place, ran the full gate:
+
+```
+$ pnpm test
+ Test Files  1 passed (1)
+      Tests  20 passed (20)
+
+$ pnpm lint
+✔ No ESLint warnings or errors
+
+$ pnpm build
+✓ Compiled successfully
+✓ Generating static pages (6/6)
+
+$ git diff lib/nzTax.ts
+(empty — no output)
+```
+
+20 tests pass (18 original + 2 new boundary fixtures), zero lint warnings, build succeeds,
+`lib/nzTax.ts` is byte-identical to the pre-cycle version.
