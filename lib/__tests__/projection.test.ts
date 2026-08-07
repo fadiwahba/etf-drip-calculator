@@ -42,7 +42,8 @@ function makeInput(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
 // Invariant 13/AC19: NaN/Infinity must never escape a calculation into a row or the summary.
 // The field list is derived at runtime, not hardcoded (review.md F3) — a hardcoded list silently
 // stops covering any numeric field added to ProjectionRow/ProjectionResult later (it already
-// missed `purchasesNzd` once). Deriving it also means a stub with missing rows/fields goes RED.
+// missed `purchasesNzd` once). It does NOT catch a missing field: `typeof undefined === "number"`
+// is false, so an absent key is skipped silently. TypeScript strict is what guards that case.
 function assertAllFinite(result: ProjectionResult): void {
   for (const [key, value] of Object.entries(result)) {
     if (typeof value === "number") {
