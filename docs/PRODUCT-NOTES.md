@@ -262,3 +262,39 @@ Unchanged from `AUDIT-2026-08-06.md`, and now more load-bearing given the two-mo
 3. **Is your foreign-holdings cost already over NZ$50k?**
 4. **Are `etfs.json`'s `avgReturn` figures price-only or total return?**
 5. **Is `RetirementAnalysis copy.tsx` deletable?**
+
+---
+
+## §9 — Which calculator is the product (decided 2026-08-07)
+
+`InvestmentProjectionCalculator` — the "Portfolio Projection Calculator" — **is the product.** It is
+what `docs/PRD.md`, the 2026-08-06 audit and every slice target, and it is what
+`etf-drip-calculator.vercel.app` serves.
+
+**The confusion, and why it happened.** Commit `964bdab "retirement analysis"` changed
+`app/page.tsx` to render `RetirementAnalysis` and commented out `InvestmentProjectionCalculator`.
+That commit sat unpushed for months, so localhost and the deployed site showed two different tools
+and looked like two different projects. They were one repo, one commit apart.
+
+**Resolution:** `app/page.tsx` renders `InvestmentProjectionCalculator` again. `RetirementAnalysis`
+moved to its own route at `/retirement` — nothing deleted, both reachable.
+
+**Why the projection calculator and not the retirement tool.** The retirement tool is a newer,
+more personal model (property equity → ETF, mortgage amortisation, equity-extraction year). The
+projection calculator is the general-purpose one the PRD describes, and it is the one carrying the
+audit's headline defect: its `Tax Rate on Dividends (%)` field is set to **1.4**, which is the FDR
+drag — 1.4% *of portfolio value* — being applied to *dividends*. On a $100k portfolio that reports
+~$13 of tax where FIF at a 28% PIR gives ~$1,400. This is the ~100× error, and it is live.
+
+**Consequence for slice order:** every UI slice (tax-mode segmented control, presets dropdown,
+three-phase model, inflation) wires into `InvestmentProjectionCalculator`.
+
+`RetirementAnalysis` has its own known defects, found by Copilot on PR #1 and **not yet fixed**:
+
+- `RetirementAnalysis.tsx:225` — `netCAGR / 100 / 12` converts annual to monthly **arithmetically**
+  (invariant 2 requires the geometric form). Overstates returns.
+- `RetirementAnalysis.tsx:123` — `calculateRemainingBalance` divides by `monthlyRate` with no zero
+  guard; clearing the rate field gives `Number('') === 0` → `Infinity` into the UI (invariants 13, 14).
+
+Both are out of scope for the current slices. They are candidates for a later slice once the shared
+engine exists, since the same `lib/` engine would fix them properly rather than patching in place.
