@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm lint:*)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm exec tsc:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "WebFetch(domain:ird.govt.nz)",
+      "WebFetch(domain:taxpolicy.ird.govt.nz)",
+      "WebFetch(domain:taxtechnical.ird.govt.nz)"
+    ],
+    "deny": []
+  }
+}

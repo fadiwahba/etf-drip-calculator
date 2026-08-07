@@ -1,0 +1,22 @@
+# per-phase owner; precedence: CLI flag > this file > agent frontmatter default
+[agents]
+plan      = { model = "session" }                  # interview runs in the main session
+spec      = { model = "opus",   effort = "high" }
+implement = { model = "sonnet", effort = "medium" }
+review    = { model = "opus",   effort = "high" }
+# fix inherits implement when omitted
+
+[defaults]
+tdd = true                            # v4 default ON; --no-tdd or false to opt out
+constitution = "docs/CONSTITUTION.md" # injected into every agent dispatch prompt
+required_verdict = "APPROVE"
+
+[required_sections]                   # additive, as v3
+"spec.md"   = ["Scope", "Acceptance Criteria", "Out of Scope", "Coder Guardrails"]
+"notes.md"  = ["What was built", "How to verify"]
+"review.md" = ["Verdict", "Spec Compliance", "Code Quality"]
+
+[max_tokens]
+"spec.md" = 2000
+"notes.md" = 6000
+"review.md" = 8000
