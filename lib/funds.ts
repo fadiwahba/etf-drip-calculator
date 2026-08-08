@@ -325,6 +325,13 @@ export const FUND_DATA_AS_OF: string = computeAsOfFloor(parseFunds(rawFundsData)
 // totalReturnAnnualised keeps §6 checkable: growth = TR − yield holds for the blend because all
 // three are linear in the same weights.
 //
+// Invariant 7 (calculator-invariants.md): totalReturnAnnualised is a weighted mean of per-fund NAV
+// total returns, which are already net of each fund's own expense ratio (see the per-fund comment
+// above). expenseRatio here is the same weighted mean applied to the ratio field, not a cost still
+// owed on top -- a caller projecting off the blend must use totalReturnAnnualised (or
+// sharePriceGrowth) as-is and must not additionally subtract the blended expenseRatio, or the fee
+// is charged twice.
+//
 // D4: `asOf` is the oldest among *contributing* members -- a blend is never fresher than its
 // stalest input -- and null when nothing contributes. `sources` carries every requested member,
 // excluded included, so provenance is never silently dropped. Membership is decided once, by

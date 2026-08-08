@@ -31,18 +31,24 @@ exports (AC1). New exports: `BlendPolicy`, `BlendWeight`, `BlendExclusion`, `Ble
 ### `git diff` — pure append, zero edited lines
 
 ```
-$ git diff lib/funds.ts   # this repo has no VCS, so shown as: original tail vs current tail
+$ git diff c2277ab d1c1a73 --numstat -- lib/funds.ts
+261     0       lib/funds.ts
 ```
 
-This repo is not a git repository (`Is directory a git repo: No`), so a literal `git diff` is not
-available. Verified instead by direct comparison: the first 298 lines of `lib/funds.ts` (the
-entire pre-slice file, captured verbatim before any edit) are byte-identical in the final file —
-every pre-existing function (`parseFunds`, `loadFunds`, `getFund`, `isProjectable`,
-`requirePriceGrowth`, `computeAsOfFloor`, `FUND_DATA_AS_OF`, …) sits at the exact same line number
-it did before this slice. All ~260 new lines are appended after
-`export const FUND_DATA_AS_OF: string = computeAsOfFloor(parseFunds(rawFundsData));` — nothing
-before that line was touched, and ACs 1–16 (the pre-existing suite) pass unmodified (189/189 total
-tests pass, including all 16 pre-existing `it()` blocks unchanged).
+```
+$ git diff c2277ab d1c1a73 -- lib/funds.ts | head -5
+diff --git a/lib/funds.ts b/lib/funds.ts
+index f648a11..a7f1e9d 100644
+--- a/lib/funds.ts
++++ b/lib/funds.ts
+@@ -295,3 +295,264 @@ function computeAsOfFloor(funds: Fund[]): string {
+```
+
+`c2277ab` is the spec commit (pre-slice `lib/funds.ts`), `d1c1a73` the feat commit (this slice).
+261 insertions, 0 deletions, one tail hunk starting at line 295 — every pre-existing function
+(`parseFunds`, `loadFunds`, `getFund`, `isProjectable`, `requirePriceGrowth`, `computeAsOfFloor`,
+`FUND_DATA_AS_OF`, …) sits at its original line number, untouched. ACs 1–16 (the pre-existing
+suite) pass unmodified (189/189 total tests, including all 16 pre-existing `it()` blocks).
 
 ## Before/after table (AC14 — mandatory)
 
@@ -219,3 +225,140 @@ arithmetic and a `node -e` scratch script against the six funds' stored figures 
 was written — see the growth/yield/ER/total-return numbers for B, C, D, E in "Before/after table"
 and the spec itself, all bit-for-bit consistent with `toBeCloseTo(x, 10)`. No disagreement between
 the spec's expected numbers and independently-computed arithmetic was found anywhere in this slice.
+
+## Cycle 1
+
+Three items from review.md (NEEDS_FIXES): F1 (wrong claim in notes.md), F2 (invariant 7 not
+restated in the blend comment), F3 (recommended — `requested[]` coverage gap). No behaviour change
+to `lib/funds.ts`: the diff below is comment-only.
+
+**F1 — corrected in place.** The "not a git repository" passage above was false; this repo is a
+git repo on `feat/nz-tax-engine`. Replaced with the real `git diff c2277ab d1c1a73 --numstat` (261
+insertions, 0 deletions) and the tail-hunk header, comparing the spec commit to the feat commit —
+see the "`git diff` — pure append" section above, corrected in place. No other content in that
+section changed.
+
+**F2 — invariant 7 now restated in the blend comment block.** Added to the D3 paragraph
+(`lib/funds.ts:328-334`), directly after the CAGR-approximation note it sits beside:
+
+```
+// Invariant 7 (calculator-invariants.md): totalReturnAnnualised is a weighted mean of per-fund NAV
+// total returns, which are already net of each fund's own expense ratio (see the per-fund comment
+// above). expenseRatio here is the same weighted mean applied to the ratio field, not a cost still
+// owed on top -- a caller projecting off the blend must use totalReturnAnnualised (or
+// sharePriceGrowth) as-is and must not additionally subtract the blended expenseRatio, or the fee
+// is charged twice.
+```
+
+`grep -ni "invariant 7" lib/funds.ts` now returns two hits: line 20 (pre-existing, per-fund) and
+line 328 (new, blend).
+
+```
+$ git diff lib/funds.ts
+diff --git a/lib/funds.ts b/lib/funds.ts
+index a7f1e9d..c518461 100644
+--- a/lib/funds.ts
++++ b/lib/funds.ts
+@@ -325,6 +325,13 @@ export const FUND_DATA_AS_OF: string = computeAsOfFloor(parseFunds(rawFundsData))
+ // totalReturnAnnualised keeps §6 checkable: growth = TR − yield holds for the blend because all
+ // three are linear in the same weights.
+ //
++// Invariant 7 (calculator-invariants.md): totalReturnAnnualised is a weighted mean of per-fund NAV
++// total returns, which are already net of each fund's own expense ratio (see the per-fund comment
++// above). expenseRatio here is the same weighted mean applied to the ratio field, not a cost still
++// owed on top -- a caller projecting off the blend must use totalReturnAnnualised (or
++// sharePriceGrowth) as-is and must not additionally subtract the blended expenseRatio, or the fee
++// is charged twice.
++//
+ // D4: `asOf` is the oldest among *contributing* members -- a blend is never fresher than its
+ // stalest input -- and null when nothing contributes. `sources` carries every requested member,
+ // excluded included, so provenance is never silently dropped. Membership is decided once, by
+```
+
+7 lines added, 0 removed, no code path touched — comment only.
+
+**F3 — closed.** Added one assertion to `Blend AC6` (fixture C, weights 0.5/0.3/0.2 — genuinely
+unequal, so `requested` and `1/n` diverge):
+
+```ts
+expect(c.requested.map((r) => r.weight)).toEqual([0.5, 0.3, 0.2]);
+```
+
+Confirmed it kills R12 (`requested[]` reports `1/n` instead of the caller's weight) before
+restoring: applying the mutation to `lib/funds.ts:478-481` (`weight: member.weight` →
+`weight: 1 / members.length`) produced
+
+```
+Test Files  1 failed | 3 skipped (4)
+     Tests  1 failed | 188 skipped (189)
+AssertionError: expected [ 1/3, 1/3, 1/3 ] to deeply equal [ 0.5, 0.3, 0.2 ]
+```
+
+file restored and re-diffed clean (`diff lib/funds.ts /tmp/funds.ts.golden2` → no output) before
+continuing. On the unmutated code the same test passes (`pnpm test` → 189/189).
+
+### Re-ran the full mutation set — 13/13 killed
+
+All 12 from the original slice plus R12/F3, applied one at a time directly to `lib/funds.ts`,
+`pnpm test` run (default reporter, real pass/fail counts — `--reporter=basic` was not used), file
+restored from a golden copy and re-diffed clean between every run:
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | Plain mean instead of weighted in `blendField` | **Killed** — 1 failed / 188 passed |
+| M2 | Skip renormalisation after exclusion | **Killed** — 1 failed / 188 passed |
+| M3 | Renormalise by member count (`1/n`) | **Killed** — 1 failed / 188 passed |
+| M4 | Null field coerced to `0` (`value ?? 0`) | **Killed** — 1 failed / 188 passed |
+| M5 | Per-field re-exclusion (`continue` on `null`) | **Killed** — 1 failed / 188 passed |
+| M6 | `asOf` = newest contributing | **Killed** — 1 failed / 188 passed |
+| M7 | `asOf` = first-listed, no comparison | **Killed** — 1 failed / 188 passed |
+| M8 | `sources` drops excluded funds | **Killed** — 1 failed / 188 passed |
+| M9a | `policy` defaulted on `blendFunds` | **Killed** — `blendFunds.length` arity check fails at runtime (`expected 2 to be 3`), independent of `tsc` |
+| M9b | `policy` defaulted on `buildBlend` | **Killed** — 1 failed / 188 passed |
+| M10 | `requireBlendPriceGrowth` returns `blend.sharePriceGrowth ?? 0` | **Killed** — 1 failed / 188 passed |
+| M11 | Exact `weightSum !== 1` instead of `1e-9` tolerance | **Killed** — 1 failed / 188 passed |
+| M12 | Drop the `weight <= 0` check | **Killed** — 1 failed / 188 passed |
+| M13 (F3) | `requested[]` reports `1/n` instead of the caller's weight | **Killed** — 1 failed / 188 passed |
+
+13/13 killed. `lib/funds.ts` restored to the golden copy and re-diffed clean
+(`diff lib/funds.ts /tmp/funds.ts.golden2` → no output) after the last mutation.
+
+### Process note acknowledged
+
+The reviewer's RED-first-order note is taken on board — write each AC's test and watch it fail
+before writing the implementation, going forward, not implementation-first-then-stub. No action
+needed on this slice's existing evidence (already accepted as genuine), just the house pattern for
+the next one.
+
+### Verify — all four, real output
+
+```
+$ pnpm test
+ Test Files  4 passed (4)
+      Tests  189 passed (189)
+   Duration  366ms
+
+$ pnpm lint
+✔ No ESLint warnings or errors
+
+$ pnpm build
+✓ Generating static pages (7/7)
+Route (app)                              Size     First Load JS
+┌ ○ /                                    12.7 kB         131 kB
+├ ○ /_not-found                          977 B           106 kB
+├ ○ /etf-comparison                      68.6 kB         181 kB
+└ ○ /retirement                          5.53 kB         123 kB
+
+$ pnpm exec tsc --noEmit
+(exit 0, no output)
+```
+
+```
+$ git diff --stat -- lib/funds.ts
+ lib/funds.ts | 7 +++++++
+ 1 file changed, 7 insertions(+)
+```
+
+Comment-only change to `lib/funds.ts`, confirmed by `--stat` (7 insertions, 0 deletions) and the
+full diff above. `lib/__tests__/funds.test.ts` gained the one `requested` assertion (F3);
+`notes.md` gained this Cycle 1 section and the F1 correction.

@@ -547,6 +547,10 @@ describe("funds — blend composition", () => {
     expect(c.isComplete).toBe(true);
     expect(c.excluded).toEqual([]);
     expect(c.members.map((m) => m.weight)).toEqual([0.5, 0.3, 0.2]);
+    // Cycle 1 / F3: `requested` must echo the caller's actual weights, not 1/n — with SCHD/DGRO/VIG
+    // at 0.5/0.3/0.2 the two diverge (1/3 each), so this pins the mutation every other fixture
+    // missed because they all use equalWeights, where requested and 1/n coincide.
+    expect(c.requested.map((r) => r.weight)).toEqual([0.5, 0.3, 0.2]);
 
     expect(c.sharePriceGrowth).toBeCloseTo(0.1029, 10);
     expect(c.dividendYield).toBeCloseTo(0.02507, 10);
