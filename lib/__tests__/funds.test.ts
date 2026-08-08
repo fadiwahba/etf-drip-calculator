@@ -10,6 +10,13 @@ import {
   FundDataError,
   MissingAssumptionError,
   FUND_DATA_AS_OF,
+  DIVIDEND_BLEND_TICKERS,
+  equalWeights,
+  blendFunds,
+  buildBlend,
+  requireBlendPriceGrowth,
+  type Blend,
+  type BlendPolicy,
 } from "@/lib/funds";
 
 // Fixture helpers for the malformed-shape / null-handling ACs (8, 9, 10, 12, 13, 14, 15). This is
@@ -49,6 +56,23 @@ function captureError(fn: () => void): Error {
     return e as Error;
   }
   throw new Error("expected function to throw");
+}
+
+// Fixture E (spec § Fixtures): two synthetic funds so AC5/AC8/AC9 can exercise a per-field null
+// (Q1's expenseRatio) that must null only that field, not the whole member.
+function makeFixtureE(): Blend {
+  const funds = parseFunds([
+    row({ ticker: "P1", asOf: "2026-05-31" }), // TR 0.1, yield 0.02, ER 0.001 (base row defaults)
+    row({
+      ticker: "Q1",
+      asOf: "2026-04-30",
+      totalReturnAnnualised: 0.2,
+      dividendYield: 0.04,
+      expenseRatio: null,
+      notes: "expense ratio not published on the primary source page (fixture)",
+    }),
+  ]);
+  return blendFunds(funds, equalWeights(["P1", "Q1"]), "strict");
 }
 
 describe("funds", () => {
@@ -410,5 +434,333 @@ describe("funds", () => {
     const fundsJsonSource = readFileSync(join(process.cwd(), "data/funds.json"), "utf-8");
     expect(fundsJsonSource).not.toMatch(/etfs\.json/);
     expect(fundsJsonSource).not.toMatch(/dividend_portfolio\.json/);
+  });
+});
+
+describe("funds — blend composition", () => {
+  it("Blend AC1 — DIVIDEND_BLEND_TICKERS is the exact six, in order", () => {
+    expect(DIVIDEND_BLEND_TICKERS).toEqual(["SCHD", "FDVV", "VYMI", "DGRO", "EUFN", "VIG"]);
+  });
+
+  it("Blend AC2 — strict is null, not zero (Fixture A)", () => {
+    const a = buildBlend(equalWeights(DIVIDEND_BLEND_TICKERS), "strict");
+
+    expect(a.sharePriceGrowth).toBeNull();
+    expect(Object.is(a.sharePriceGrowth, 0)).toBe(false);
+    expect(a.dividendYield).toBeNull();
+    expect(Object.is(a.dividendYield, 0)).toBe(false);
+    expect(a.expenseRatio).toBeNull();
+    expect(Object.is(a.expenseRatio, 0)).toBe(false);
+    expect(a.totalReturnAnnualised).toBeNull();
+    expect(Object.is(a.totalReturnAnnualised, 0)).toBe(false);
+    expect(a.asOf).toBeNull();
+
+    expect(a.members).toEqual([]);
+    expect(a.isComplete).toBe(false);
+    expect(a.sources).toHaveLength(6);
+    expect(a.requested).toHaveLength(6);
+    for (const r of a.requested) {
+      expect(r.weight).toBeCloseTo(1 / 6, 10);
+    }
+
+    expect(a.excluded.map((e) => e.ticker)).toEqual(["FDVV", "VYMI"]);
+    for (const e of a.excluded) {
+      expect(e.requestedWeight).toBeCloseTo(1 / 6, 10);
+      expect(e.reason).toBe(getFund(e.ticker).notes);
+      expect(e.reason.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("Blend AC3 — strict blocks a projection, naming both unprojectable tickers", () => {
+    const a = buildBlend(equalWeights(DIVIDEND_BLEND_TICKERS), "strict");
+    const err = captureError(() => requireBlendPriceGrowth(a));
+    expect(err).toBeInstanceOf(MissingAssumptionError);
+    expect(err).not.toBeInstanceOf(FundDataError);
+    expect(err.message).toContain("FDVV");
+    expect(err.message).toContain("VYMI");
+  });
+
+  it("Blend AC4 — exclude renormalises (Fixture B)", () => {
+    const b = buildBlend(equalWeights(DIVIDEND_BLEND_TICKERS), "excludeUnprojectable");
+
+    expect(b.members.map((m) => m.ticker)).toEqual(["SCHD", "DGRO", "EUFN", "VIG"]);
+    for (const m of b.members) {
+      expect(m.weight).toBeCloseTo(0.25, 10);
+    }
+    expect(b.excluded.map((e) => e.ticker)).toEqual(["FDVV", "VYMI"]);
+    expect(b.isComplete).toBe(false);
+    expect(b.sources).toHaveLength(6);
+    expect(b.asOf).toBe("2026-06-30");
+
+    expect(b.sharePriceGrowth).toBeCloseTo(0.10845, 10);
+    expect(b.dividendYield).toBeCloseTo(0.0243, 10);
+    expect(b.expenseRatio).toBeCloseTo(0.001675, 10);
+    expect(b.totalReturnAnnualised).toBeCloseTo(0.13275, 10);
+    // The null-as-0 *and* no-renormalisation answer (D1 table) -- must never be reachable.
+    expect(b.sharePriceGrowth).not.toBe(0.0723);
+
+    expect(requireBlendPriceGrowth(b)).toBeCloseTo(0.10845, 10);
+  });
+
+  it("Blend AC5 — §6 identity holds for B, C, D and E", () => {
+    const b = buildBlend(equalWeights(DIVIDEND_BLEND_TICKERS), "excludeUnprojectable");
+    const c = buildBlend(
+      [
+        { ticker: "SCHD", weight: 0.5 },
+        { ticker: "DGRO", weight: 0.3 },
+        { ticker: "VIG", weight: 0.2 },
+      ],
+      "strict"
+    );
+    const d = buildBlend(
+      [
+        { ticker: "SCHD", weight: 0.4 },
+        { ticker: "VYMI", weight: 0.3 },
+        { ticker: "DGRO", weight: 0.2 },
+        { ticker: "VIG", weight: 0.1 },
+      ],
+      "excludeUnprojectable"
+    );
+    const e = makeFixtureE();
+
+    for (const blend of [b, c, d, e]) {
+      expect(blend.sharePriceGrowth).not.toBeNull();
+      expect(blend.totalReturnAnnualised).not.toBeNull();
+      expect(blend.dividendYield).not.toBeNull();
+      expect(blend.sharePriceGrowth as number).toBeCloseTo(
+        (blend.totalReturnAnnualised as number) - (blend.dividendYield as number),
+        10
+      );
+    }
+  });
+
+  it("Blend AC6 — weighted, not plain, mean (Fixture C)", () => {
+    const c = buildBlend(
+      [
+        { ticker: "SCHD", weight: 0.5 },
+        { ticker: "DGRO", weight: 0.3 },
+        { ticker: "VIG", weight: 0.2 },
+      ],
+      "strict"
+    );
+
+    expect(c.isComplete).toBe(true);
+    expect(c.excluded).toEqual([]);
+    expect(c.members.map((m) => m.weight)).toEqual([0.5, 0.3, 0.2]);
+
+    expect(c.sharePriceGrowth).toBeCloseTo(0.1029, 10);
+    expect(c.dividendYield).toBeCloseTo(0.02507, 10);
+    expect(c.expenseRatio).toBeCloseTo(0.00062, 10);
+    expect(c.totalReturnAnnualised).toBeCloseTo(0.12797, 10);
+
+    // A plain (unweighted) mean over the same three funds fails all three ways.
+    expect(c.sharePriceGrowth).not.toBeCloseTo(0.1069, 3);
+    expect(c.dividendYield).not.toBeCloseTo(0.0222333333, 3);
+    expect(c.expenseRatio).not.toBeCloseTo(0.0006, 5);
+  });
+
+  it("Blend AC7 — non-uniform renormalisation (Fixture D)", () => {
+    const d = buildBlend(
+      [
+        { ticker: "SCHD", weight: 0.4 },
+        { ticker: "VYMI", weight: 0.3 },
+        { ticker: "DGRO", weight: 0.2 },
+        { ticker: "VIG", weight: 0.1 },
+      ],
+      "excludeUnprojectable"
+    );
+
+    expect(d.members.map((m) => m.ticker)).toEqual(["SCHD", "DGRO", "VIG"]);
+    expect(d.members[0].weight).toBeCloseTo(4 / 7, 10);
+    expect(d.members[1].weight).toBeCloseTo(2 / 7, 10);
+    expect(d.members[2].weight).toBeCloseTo(1 / 7, 10);
+    const weightSum = d.members.reduce((sum, m) => sum + m.weight, 0);
+    expect(Math.abs(weightSum - 1)).toBeLessThanOrEqual(1e-12);
+
+    expect(d.sharePriceGrowth).toBeCloseTo(0.1011857142857143, 10);
+    expect(d.dividendYield).toBeCloseTo(0.026285714285714286, 10);
+    expect(d.expenseRatio).toBeCloseTo(0.0006285714285714286, 10);
+    expect(d.totalReturnAnnualised).toBeCloseTo(0.1274714285714286, 10);
+
+    expect(d.excluded).toEqual([{ ticker: "VYMI", requestedWeight: 0.3, reason: expect.any(String) }]);
+
+    // Neither "VYMI counted as 0, no renormalisation" nor "renormalised by member count" (both
+    // banned interpretations from the D1 table / AC7).
+    expect(d.sharePriceGrowth).not.toBeCloseTo(0.07083, 3);
+    expect(d.sharePriceGrowth).not.toBeCloseTo(0.1069, 3);
+  });
+
+  it("Blend AC8 — a null field nulls the field, not the member (Fixture E)", () => {
+    const e = makeFixtureE();
+
+    expect(e.expenseRatio).toBeNull();
+    expect(e.expenseRatio).not.toBe(0.001); // per-field re-exclusion (dropping Q1 entirely)
+    expect(e.expenseRatio).not.toBe(0.0005); // null-as-0
+
+    expect(e.sharePriceGrowth).toBeCloseTo(0.12, 10);
+    expect(e.dividendYield).toBeCloseTo(0.03, 10);
+    expect(e.totalReturnAnnualised).toBeCloseTo(0.15, 10);
+    expect(e.members).toHaveLength(2);
+    expect(e.excluded).toEqual([]);
+    expect(e.isComplete).toBe(true);
+  });
+
+  it("Blend AC9 — asOf is the oldest CONTRIBUTING member, not newest or first-listed", () => {
+    expect(buildBlend(equalWeights(["VIG", "SCHD"]), "strict").asOf).toBe("2026-06-30");
+    expect(buildBlend(equalWeights(["VIG"]), "strict").asOf).toBe("2026-07-31");
+
+    const e = makeFixtureE();
+    expect(e.asOf).toBe("2026-04-30");
+
+    const b = buildBlend(equalWeights(DIVIDEND_BLEND_TICKERS), "excludeUnprojectable");
+    for (const s of b.sources) {
+      const fund = getFund(s.ticker);
+      expect(s.asOf).toBe(fund.asOf);
+      expect(s.source).toBe(fund.source);
+    }
+  });
+
+  it("Blend AC10 — weight-sum tolerance, not exact equality", () => {
+    expect(() => buildBlend(equalWeights(DIVIDEND_BLEND_TICKERS), "strict")).not.toThrow();
+
+    expect(() =>
+      buildBlend(
+        [
+          { ticker: "SCHD", weight: 0.5 },
+          { ticker: "DGRO", weight: 0.5000001 },
+        ],
+        "strict"
+      )
+    ).toThrow(FundDataError);
+
+    expect(() =>
+      buildBlend(
+        [
+          { ticker: "SCHD", weight: 0.5 },
+          { ticker: "DGRO", weight: 0.4 },
+        ],
+        "strict"
+      )
+    ).toThrow(FundDataError);
+
+    expect(() =>
+      buildBlend(
+        [
+          { ticker: "SCHD", weight: 0.5 },
+          { ticker: "DGRO", weight: 0.5 + 1e-12 },
+        ],
+        "strict"
+      )
+    ).not.toThrow();
+  });
+
+  it("Blend AC11 — every invalid request throws FundDataError, naming the ticker or field", () => {
+    expect(() => buildBlend([], "strict")).toThrow(FundDataError);
+    expect(() => equalWeights([])).toThrow(FundDataError);
+
+    const unknownErr = captureError(() => buildBlend([{ ticker: "VOO", weight: 1 }], "strict"));
+    expect(unknownErr).toBeInstanceOf(FundDataError);
+    expect(unknownErr.message).toContain("VOO");
+
+    const dupErr = captureError(() =>
+      buildBlend(
+        [
+          { ticker: "SCHD", weight: 0.5 },
+          { ticker: "SCHD", weight: 0.5 },
+        ],
+        "strict"
+      )
+    );
+    expect(dupErr).toBeInstanceOf(FundDataError);
+    expect(dupErr.message).toContain("SCHD");
+
+    for (const badWeight of [NaN, Infinity, -Infinity, -0.1, 0]) {
+      const err = captureError(() =>
+        buildBlend([{ ticker: "SCHD", weight: badWeight }], "strict")
+      );
+      expect(err).toBeInstanceOf(FundDataError);
+      expect(err.message).toContain("SCHD");
+    }
+
+    const stringWeightErr = captureError(() =>
+      buildBlend(
+        [{ ticker: "SCHD", weight: "0.5" }] as unknown as { ticker: string; weight: number }[],
+        "strict"
+      )
+    );
+    expect(stringWeightErr).toBeInstanceOf(FundDataError);
+    expect(stringWeightErr.message).toContain("SCHD");
+
+    const policyErr = captureError(() =>
+      buildBlend(equalWeights(["SCHD"]), "loose" as BlendPolicy)
+    );
+    expect(policyErr).toBeInstanceOf(FundDataError);
+    expect(policyErr.message).toContain("policy");
+  });
+
+  it("Blend AC12 — types force the decision", () => {
+    // @ts-expect-error sharePriceGrowth is number | null -- a caller must handle the null
+    const g: number = buildBlend(equalWeights(["SCHD"]), "strict").sharePriceGrowth;
+    // Not invoked -- omitting `policy` throws FundDataError at runtime (AC11: validated at
+    // runtime, not only in the type), so this only needs to prove the *type* rejects it.
+    // @ts-expect-error policy is required, not optional -- it must be typed in, not defaulted
+    const callWithoutPolicy = () => buildBlend(equalWeights(["SCHD"]));
+    // @ts-expect-error policy is required on blendFunds too, not just its buildBlend wrapper
+    const callBlendFundsWithoutPolicy = () => blendFunds(loadFunds(), equalWeights(["SCHD"]));
+    expect(typeof g === "number" || g === null).toBe(true);
+    expect(typeof callWithoutPolicy).toBe("function");
+    expect(typeof callBlendFundsWithoutPolicy).toBe("function");
+    // A default parameter value drops a function's declared arity (Function.length excludes
+    // every parameter from the first with a default onward) -- this catches `policy` silently
+    // gaining a default even if every call site still happens to pass it explicitly.
+    expect(blendFunds.length).toBe(3);
+    expect(buildBlend.length).toBe(2);
+  });
+
+  it("Blend AC13 — pure and finite", () => {
+    const funds = loadFunds();
+    const fundsBefore = JSON.parse(JSON.stringify(funds));
+    const members = equalWeights(["SCHD", "DGRO"]);
+    const membersBefore = JSON.parse(JSON.stringify(members));
+
+    blendFunds(funds, members, "excludeUnprojectable");
+
+    expect(funds).toEqual(fundsBefore);
+    expect(members).toEqual(membersBefore);
+
+    const b = buildBlend(equalWeights(DIVIDEND_BLEND_TICKERS), "excludeUnprojectable");
+    const c = buildBlend(
+      [
+        { ticker: "SCHD", weight: 0.5 },
+        { ticker: "DGRO", weight: 0.3 },
+        { ticker: "VIG", weight: 0.2 },
+      ],
+      "strict"
+    );
+    const d = buildBlend(
+      [
+        { ticker: "SCHD", weight: 0.4 },
+        { ticker: "VYMI", weight: 0.3 },
+        { ticker: "DGRO", weight: 0.2 },
+        { ticker: "VIG", weight: 0.1 },
+      ],
+      "excludeUnprojectable"
+    );
+    const e = makeFixtureE();
+
+    for (const blend of [b, c, d, e]) {
+      for (const value of [
+        blend.sharePriceGrowth,
+        blend.dividendYield,
+        blend.expenseRatio,
+        blend.totalReturnAnnualised,
+      ]) {
+        if (value !== null) {
+          expect(Number.isFinite(value)).toBe(true);
+        }
+      }
+      const weightSum = blend.members.reduce((sum, m) => sum + m.weight, 0);
+      expect(Math.abs(weightSum - 1)).toBeLessThanOrEqual(1e-12);
+    }
   });
 });

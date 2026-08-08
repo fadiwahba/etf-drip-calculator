@@ -295,3 +295,264 @@ function computeAsOfFloor(funds: Fund[]): string {
 // Computed from the parsed data, not typed in -- if a row's asOf changes on the next refresh,
 // this floor moves with it automatically.
 export const FUND_DATA_AS_OF: string = computeAsOfFloor(parseFunds(rawFundsData));
+
+// --- Blend composition (D1-D4, PRODUCT-NOTES §8) ---------------------------------------------
+//
+// D1: `policy` is a *required* argument, no default, because PRODUCT-NOTES §8 names the six-fund
+// "Dividend Blend" while VYMI (null dividendYield) and FDVV (null totalReturnAnnualised) are still
+// unprojectable -- see docs/fund-data-2026-08-07.md § FINAL. Two honest answers exist, and only the
+// caller may pick which one they want:
+//   "strict"               -- the whole-membership answer: every blended figure is null while any
+//                              requested member is unprojectable (Constitution §8 -- null, never 0).
+//   "excludeUnprojectable" -- the only way to reach a number: drop the unprojectable members,
+//                              renormalise the survivors' weights to sum 1, and carry `excluded` so
+//                              no caller can present a partial blend as the full six-fund label.
+// Coercing a null to 0 is banned outright (§8): equalWeights(DIVIDEND_BLEND_TICKERS) would give
+// 0.0723 growth that way, against the honest four-fund 0.10845 -- a 3.615pp wrong number that is
+// exactly the "plausible but wrong" failure this project exists to prevent.
+//
+// D2: PRODUCT-NOTES §8 records *membership*, not an allocation -- inventing one breaches
+// Constitution §3. `equalWeights` is the only weight source exposed by this module; any other
+// allocation is the caller's own input, never invented here. Weights are fractions of capital
+// (NZD market value), never of units (PRODUCT-NOTES §7.3).
+//
+// D3: all four fields are weighted arithmetic means, Σ wᵢ·xᵢ. Expense ratio and dividend yield are
+// exact this way -- both are a percentage of each holding's value, so total/portfolio value *is*
+// the capital-weighted mean. Price growth is exact only under this project's model: each fund at
+// one constant annual rate, weights held by *annual rebalancing* (PRODUCT-NOTES §7.5's accepted
+// simplification) -- a buy-and-hold blend would need (Σ wᵢ(1+gᵢ)¹⁰)^(1/10) − 1 and drift weight
+// toward the winner (50/50 of 20%/0% gives 10.00% rebalanced vs ≈13.65% buy-and-hold). Blending
+// totalReturnAnnualised keeps §6 checkable: growth = TR − yield holds for the blend because all
+// three are linear in the same weights.
+//
+// D4: `asOf` is the oldest among *contributing* members -- a blend is never fresher than its
+// stalest input -- and null when nothing contributes. `sources` carries every requested member,
+// excluded included, so provenance is never silently dropped. Membership is decided once, by
+// isProjectable; a contributing member with a null in some other field (e.g. Fixture E's FDVV-like
+// null expenseRatio) nulls that whole blended field, never a per-field re-exclusion, never 0 --
+// every non-null figure still covers one identical membership.
+
+export type BlendPolicy = "strict" | "excludeUnprojectable";
+
+export interface BlendWeight {
+  ticker: string;
+  weight: number; // fraction of capital; effective weights in `members` sum to 1
+}
+
+export interface BlendExclusion {
+  ticker: string;
+  requestedWeight: number;
+  reason: string;
+}
+
+export interface BlendProvenance {
+  ticker: string;
+  asOf: string;
+  source: string;
+}
+
+export interface Blend {
+  policy: BlendPolicy;
+  requested: BlendWeight[];
+  members: BlendWeight[];
+  excluded: BlendExclusion[];
+  isComplete: boolean;
+  sharePriceGrowth: number | null;
+  dividendYield: number | null;
+  expenseRatio: number | null;
+  totalReturnAnnualised: number | null;
+  asOf: string | null;
+  sources: BlendProvenance[];
+}
+
+// PRODUCT-NOTES §8's "Dividend Blend" preset membership, in the order the preset is documented --
+// every other array in a Blend (requested/members/excluded/sources) preserves this request order.
+export const DIVIDEND_BLEND_TICKERS: readonly string[] = [
+  "SCHD",
+  "FDVV",
+  "VYMI",
+  "DGRO",
+  "EUFN",
+  "VIG",
+];
+
+const BLEND_WEIGHT_SUM_TOLERANCE = 1e-9;
+
+function requireValidBlendWeight(weight: unknown, ticker: string): number {
+  if (typeof weight !== "number") {
+    throw new FundDataError(`${ticker}: weight must be a number`);
+  }
+  if (!Number.isFinite(weight)) {
+    throw new FundDataError(
+      `${ticker}: weight must be finite -- NaN/Infinity is not a valid weight`
+    );
+  }
+  if (weight <= 0) {
+    throw new FundDataError(
+      `${ticker}: weight must be > 0 -- a zero or negative weight is not a valid allocation`
+    );
+  }
+  return weight;
+}
+
+function requireValidBlendPolicy(policy: BlendPolicy): BlendPolicy {
+  if (policy !== "strict" && policy !== "excludeUnprojectable") {
+    throw new FundDataError(
+      `policy must be "strict" or "excludeUnprojectable" -- got ${JSON.stringify(policy)}`
+    );
+  }
+  return policy;
+}
+
+export function equalWeights(tickers: readonly string[]): BlendWeight[] {
+  if (tickers.length === 0) {
+    throw new FundDataError("equalWeights: tickers must be non-empty -- 1/0 is not a weight");
+  }
+  const weight = 1 / tickers.length;
+  return tickers.map((ticker) => ({ ticker, weight }));
+}
+
+interface ResolvedBlendMember {
+  ticker: string;
+  weight: number;
+  fund: Fund;
+}
+
+// A single blended field is null the moment any contributing member's own value is null (D4) --
+// never re-excluded per field, never coerced to 0 (Constitution §8).
+function blendField(
+  contributing: ResolvedBlendMember[],
+  select: (fund: Fund) => number | null
+): number | null {
+  if (contributing.length === 0) return null;
+  let sum = 0;
+  for (const member of contributing) {
+    const value = select(member.fund);
+    if (value === null) return null;
+    sum += member.weight * value;
+  }
+  return sum;
+}
+
+function oldestContributingAsOf(contributing: ResolvedBlendMember[]): string | null {
+  if (contributing.length === 0) return null;
+  return contributing.reduce(
+    (min, member) => (member.fund.asOf < min ? member.fund.asOf : min),
+    contributing[0].fund.asOf
+  );
+}
+
+// Mirrors `parseFunds` -- all blend arithmetic lives here (invariant §2), `buildBlend` only
+// supplies `loadFunds()`.
+export function blendFunds(funds: Fund[], members: BlendWeight[], policy: BlendPolicy): Blend {
+  requireValidBlendPolicy(policy);
+
+  if (members.length === 0) {
+    throw new FundDataError("blendFunds: members must be non-empty");
+  }
+
+  const seenTickers = new Set<string>();
+  for (const member of members) {
+    requireValidBlendWeight(member.weight, member.ticker);
+    if (seenTickers.has(member.ticker)) {
+      throw new FundDataError(`${member.ticker}: duplicate ticker in blend membership`);
+    }
+    seenTickers.add(member.ticker);
+  }
+
+  const weightSum = members.reduce((sum, member) => sum + member.weight, 0);
+  if (Math.abs(weightSum - 1) > BLEND_WEIGHT_SUM_TOLERANCE) {
+    throw new FundDataError(
+      `blendFunds: weights must sum to 1 (within ${BLEND_WEIGHT_SUM_TOLERANCE}) -- got ${weightSum}`
+    );
+  }
+
+  const resolved: ResolvedBlendMember[] = members.map((member) => {
+    const fund = funds.find((f) => f.ticker === member.ticker);
+    if (!fund) {
+      throw new FundDataError(`Unknown ticker "${member.ticker}"`);
+    }
+    return { ticker: member.ticker, weight: member.weight, fund };
+  });
+
+  const requested: BlendWeight[] = members.map((member) => ({
+    ticker: member.ticker,
+    weight: member.weight,
+  }));
+  const sources: BlendProvenance[] = resolved.map((member) => ({
+    ticker: member.ticker,
+    asOf: member.fund.asOf,
+    source: member.fund.source,
+  }));
+
+  const nonProjectable = resolved.filter((member) => !isProjectable(member.fund));
+  const projectable = resolved.filter((member) => isProjectable(member.fund));
+
+  let contributing: ResolvedBlendMember[];
+  let excluded: BlendExclusion[];
+
+  if (policy === "strict") {
+    if (nonProjectable.length > 0) {
+      // The honest six-fund answer: no partial number, so nothing contributes.
+      contributing = [];
+      excluded = nonProjectable.map((member) => ({
+        ticker: member.ticker,
+        requestedWeight: member.weight,
+        reason: member.fund.notes ?? "",
+      }));
+    } else {
+      contributing = resolved;
+      excluded = [];
+    }
+  } else {
+    excluded = nonProjectable.map((member) => ({
+      ticker: member.ticker,
+      requestedWeight: member.weight,
+      reason: member.fund.notes ?? "",
+    }));
+    const survivorWeightSum = projectable.reduce((sum, member) => sum + member.weight, 0);
+    contributing =
+      survivorWeightSum > 0
+        ? projectable.map((member) => ({
+            ticker: member.ticker,
+            weight: member.weight / survivorWeightSum,
+            fund: member.fund,
+          }))
+        : [];
+  }
+
+  const blendMembers: BlendWeight[] = contributing.map((member) => ({
+    ticker: member.ticker,
+    weight: member.weight,
+  }));
+
+  return {
+    policy,
+    requested,
+    members: blendMembers,
+    excluded,
+    isComplete: excluded.length === 0,
+    sharePriceGrowth: blendField(contributing, (f) => f.sharePriceGrowth),
+    dividendYield: blendField(contributing, (f) => f.dividendYield),
+    expenseRatio: blendField(contributing, (f) => f.expenseRatio),
+    totalReturnAnnualised: blendField(contributing, (f) => f.totalReturnAnnualised),
+    asOf: oldestContributingAsOf(contributing),
+    sources,
+  };
+}
+
+export function buildBlend(members: BlendWeight[], policy: BlendPolicy): Blend {
+  return blendFunds(loadFunds(), members, policy);
+}
+
+export function requireBlendPriceGrowth(blend: Blend): number {
+  if (blend.sharePriceGrowth === null) {
+    const excludedNames = blend.excluded.map((e) => e.ticker).join(", ");
+    throw new MissingAssumptionError(
+      `blend: sharePriceGrowth is unavailable${
+        excludedNames.length > 0 ? ` -- ${excludedNames} cannot be projected` : ""
+      }`
+    );
+  }
+  return blend.sharePriceGrowth;
+}
