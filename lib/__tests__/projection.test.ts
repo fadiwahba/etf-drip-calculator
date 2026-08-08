@@ -1715,78 +1715,126 @@ describe("tax-mode-compare", () => {
     expect(comparison.pieTotalTaxNzd).toBe(comparison.directTotalTaxNzd);
   });
 
-  // AC6: de minimis (Fixture R) — no dividends means a 0 below-threshold tax base, so years 1-2 are
-  // identical between the two wrappers; year 3 crosses the threshold and the rates diverge.
-  it("AC6 — de minimis (Fixture R)", () => {
+  // AC6: de minimis (Fixture R). CORRECTED under
+  // features/pie-de-minimis-wrapper-aware/spec.md: this fixture used to pin the pre-fix defect —
+  // it assumed a PIE below $40,000 cost sat in the dividend regime like direct, so years 1-2 were
+  // "identical between the two wrappers" and only year 3 (cost basis crossing $50k) diverged. That
+  // was wrong: nz-tax.md "the de minimis is a DIRECT-HOLDING rule only — it never applies to a
+  // PIE" means the PIE leg runs FIF (FDR = 5% x opening value) from year 1, so it diverges from
+  // direct (which stays dividend-regime, $0 tax, since Fixture R pays no dividends) immediately —
+  // not at year 3. The direct leg's own numbers (48,000 / 56,800 / 65,372.4 / 74,634.8782) are
+  // byte-identical to the pre-fix values; only the pie-side numbers and the derived
+  // differenceNzd/firstDecisiveYear/firstDecisiveWrapper below changed, and only because of this.
+  it("AC6 — de minimis (Fixture R): the PIE leg diverges from year 1, not year 3", () => {
     const comparison = compareWrappers(makeFixtureR());
 
     const y1 = comparison.years[1];
-    expect(y1.pieClosingValueAfterTaxNzd).toBeCloseTo(48_000, 6);
-    expect(y1.directClosingValueAfterTaxNzd).toBeCloseTo(48_000, 6);
-    expect(y1.differenceNzd).toBe(0);
-    expect(comparison.pie.rows[1].taxRegime).toBe("dividend");
-    expect(comparison.direct.rows[1].taxRegime).toBe("dividend");
+    // OLD (wrong): pieClosingValueAfterTaxNzd 48,000, differenceNzd 0, pie regime "dividend" — pinned
+    // the shipped defect (a $44,000-cost PIE taxed as if under the de minimis).
+    expect(y1.pieClosingValueAfterTaxNzd).toBeCloseTo(47_440, 6);
+    expect(y1.directClosingValueAfterTaxNzd).toBeCloseTo(48_000, 6); // unchanged (direct leg)
+    expect(y1.differenceNzd).toBeCloseTo(-560, 6);
+    expect(comparison.pie.rows[1].taxRegime).toBe("fif"); // was asserted "dividend" — the fix
+    expect(comparison.pie.rows[1].taxMethod).toBe("fdr");
+    expect(comparison.pie.rows[1].aboveThreshold).toBe(false); // informational only for a PIE
+    expect(comparison.pie.rows[1].taxableIncomeNzd).toBeCloseTo(2_000, 6); // FDR = 5% x 40,000
+    expect(comparison.direct.rows[1].taxRegime).toBe("dividend"); // unchanged (direct leg)
 
     const y2 = comparison.years[2];
-    expect(y2.pieClosingValueAfterTaxNzd).toBeCloseTo(56_800, 6);
-    expect(y2.directClosingValueAfterTaxNzd).toBeCloseTo(56_800, 6);
-    expect(y2.differenceNzd).toBe(0);
+    // OLD (wrong): pieClosingValueAfterTaxNzd 56,800, differenceNzd 0 — same defect, one year on.
+    expect(y2.pieClosingValueAfterTaxNzd).toBeCloseTo(55_519.84, 6);
+    expect(y2.directClosingValueAfterTaxNzd).toBeCloseTo(56_800, 6); // unchanged (direct leg)
+    expect(y2.differenceNzd).toBeCloseTo(-1_280.16, 6);
 
     const y3 = comparison.years[3];
-    expect(comparison.pie.rows[3].costBasisNzd).toBeCloseTo(52_000, 6);
-    expect(comparison.pie.rows[3].taxRegime).toBe("fif");
-    expect(y3.pieClosingValueAfterTaxNzd).toBeCloseTo(65_684.8, 6);
-    expect(y3.directClosingValueAfterTaxNzd).toBeCloseTo(65_372.4, 6);
-    expect(y3.differenceNzd).toBeCloseTo(312.4, 6);
+    expect(comparison.pie.rows[3].costBasisNzd).toBeCloseTo(52_000, 6); // unchanged: cost basis is
+    // wrapper-independent for this no-dividend fixture (untouched by the fix)
+    expect(comparison.pie.rows[3].taxRegime).toBe("fif"); // unchanged: was already "fif" pre-fix,
+    // since cost 52,000 > 50,000 already put it above the threshold under the old wrapper-blind gate
+    // OLD (wrong): pieClosingValueAfterTaxNzd 65,684.8, differenceNzd +312.4 (pie ahead) — both
+    // followed from the wrong year-1/2 base above, not from year 3's own (correct) FIF maths.
+    expect(y3.pieClosingValueAfterTaxNzd).toBeCloseTo(64_294.54624, 6);
+    expect(y3.directClosingValueAfterTaxNzd).toBeCloseTo(65_372.4, 6); // unchanged (direct leg)
+    expect(y3.differenceNzd).toBeCloseTo(-1_077.85376, 6);
 
     const y4 = comparison.years[4];
-    expect(y4.pieClosingValueAfterTaxNzd).toBeCloseTo(75_333.6928, 6);
-    expect(y4.directClosingValueAfterTaxNzd).toBeCloseTo(74_634.8782, 6);
-    expect(y4.differenceNzd).toBeCloseTo(698.8146, 6);
+    // OLD (wrong): pieClosingValueAfterTaxNzd 75,333.6928, differenceNzd +698.8146 (pie ahead).
+    expect(y4.pieClosingValueAfterTaxNzd).toBeCloseTo(73_823.87721664, 6);
+    expect(y4.directClosingValueAfterTaxNzd).toBeCloseTo(74_634.8782, 6); // unchanged (direct leg)
+    expect(y4.differenceNzd).toBeCloseTo(-811.00098336, 6);
 
-    expect(comparison.firstDecisiveYear).toBe(3);
-    expect(comparison.firstDecisiveWrapper).toBe("pie");
-    expect(comparison.flipYear).toBeNull();
+    // OLD (wrong): firstDecisiveYear 3, firstDecisiveWrapper "pie" — under the correct fix, direct
+    // is decisively cheaper from year 1 (this fixture pays no dividends, so direct's dividend-regime
+    // tax is $0 for its entire below-threshold run, while the PIE pays FIF/FDR tax throughout).
+    expect(comparison.firstDecisiveYear).toBe(1);
+    expect(comparison.firstDecisiveWrapper).toBe("direct");
+    expect(comparison.flipYear).toBeNull(); // unchanged: direct leads throughout, never flips
   });
 
-  // AC7: a real flip (Fixture F) — year 1 both below threshold (dividend), year 2 straddles it
-  // (direct still below, pie above via FDR), years 3-4 both above (fif); the winner flips at year 2
-  // and the year-4 reversal back to pie is deliberately not reported (only the first flip is).
-  it("AC7 — a real flip (Fixture F)", () => {
+  // AC7 (Fixture F). CORRECTED under features/pie-de-minimis-wrapper-aware/spec.md: this fixture
+  // used to pin the pre-fix defect from year 1 — it assumed a PIE below cost stayed in the dividend
+  // regime exactly like direct (both "dividend" at y1, pie briefly ahead), then modelled a "flip"
+  // driven by the PIE's cost basis crossing the deliberately-tight fifThresholdNzd (40,802.4)
+  // fractionally before direct's. nz-tax.md "the de minimis is a DIRECT-HOLDING rule only — it
+  // never applies to a PIE" means the PIE leg is "fif"/"fdr" from year 1, not "dividend", and the
+  // threshold crossing this fixture was built to straddle no longer decides the PIE's regime at
+  // all — `aboveThreshold` is informational only for a PIE (nz-tax.md decision 3). The corrected,
+  // engine-verified numbers below show direct decisively cheaper from year 1 and never flips — the
+  // "flip" this AC was named for was itself an artifact of the wrapper-blind gate; see notes.md
+  // "Fixture F no longer flips" for why that coverage gap is flagged as a blocker, not silently
+  // patched over here. The direct leg's own numbers (44,244 / 48,913.7530909091 / cost bases /
+  // aboveThreshold) are byte-identical to the pre-fix values; only the pie-side numbers and the
+  // derived differenceNzd/cheaperWrapper/firstDecisive*/flip* below changed, and only because of
+  // this fix.
+  it("AC7 (Fixture F): the PIE leg runs FIF from year 1; the fixture's old 'flip' no longer occurs", () => {
     const comparison = compareWrappers(makeFixtureF());
 
     const y1 = comparison.years[1];
-    expect(comparison.pie.rows[1].taxRegime).toBe("dividend");
-    expect(comparison.direct.rows[1].taxRegime).toBe("dividend");
-    expect(y1.pieClosingValueAfterTaxNzd).toBeCloseTo(44_288, 6);
-    expect(y1.directClosingValueAfterTaxNzd).toBeCloseTo(44_244, 6);
-    expect(y1.differenceNzd).toBeCloseTo(44, 6);
-    expect(y1.cheaperWrapper).toBe("pie");
+    // OLD (wrong): pie regime "dividend", pieClosingValueAfterTaxNzd 44,288, differenceNzd +44 (pie
+    // ahead), cheaperWrapper "pie" — all pinned the shipped defect (a $40,400-cost PIE taxed as if
+    // under the de minimis).
+    expect(comparison.pie.rows[1].taxRegime).toBe("fif");
+    expect(comparison.pie.rows[1].taxMethod).toBe("fdr");
+    expect(comparison.pie.rows[1].taxableIncomeNzd).toBeCloseTo(2_000, 6); // FDR = 5% x 40,000
+    expect(comparison.direct.rows[1].taxRegime).toBe("dividend"); // unchanged (direct leg)
+    expect(y1.pieClosingValueAfterTaxNzd).toBeCloseTo(43_840, 6);
+    expect(y1.directClosingValueAfterTaxNzd).toBeCloseTo(44_244, 6); // unchanged (direct leg)
+    expect(y1.differenceNzd).toBeCloseTo(-404, 6);
+    expect(y1.cheaperWrapper).toBe("direct");
 
     const y2 = comparison.years[2];
-    expect(comparison.direct.rows[2].costBasisNzd).toBeCloseTo(40_802.2181818181818, 6);
-    expect(comparison.direct.rows[2].aboveThreshold).toBe(false);
-    expect(comparison.pie.rows[2].costBasisNzd).toBeCloseTo(40_802.6181818181818, 6);
-    expect(comparison.pie.rows[2].aboveThreshold).toBe(true);
+    expect(comparison.direct.rows[2].costBasisNzd).toBeCloseTo(40_802.2181818181818, 6); // unchanged
+    expect(comparison.direct.rows[2].aboveThreshold).toBe(false); // unchanged (direct leg)
+    // OLD (wrong): pie.rows[2].costBasisNzd 40,802.6181818181818, aboveThreshold true,
+    // taxableIncomeNzd 2,214.4 — the pie-side cost basis itself changed because a PIE now pays FIF
+    // tax from year 1, which (this being a DRIP model funding tax from the portfolio) leaves fewer
+    // shares to earn year-2 dividends than the old, wrongly-untaxed year-1 pie leg had.
+    expect(comparison.pie.rows[2].costBasisNzd).toBeCloseTo(40_798.545454545456, 6);
+    expect(comparison.pie.rows[2].aboveThreshold).toBe(false); // informational only for a PIE
     expect(comparison.pie.rows[2].taxMethod).toBe("fdr");
-    expect(comparison.pie.rows[2].taxableIncomeNzd).toBeCloseTo(2_214.4, 6);
-    expect(y2.pieClosingValueAfterTaxNzd).toBeCloseTo(48_499.38618181818, 6);
-    expect(y2.directClosingValueAfterTaxNzd).toBeCloseTo(48_913.75309090909, 6);
-    expect(y2.differenceNzd).toBeCloseTo(-414.36690909091, 6);
-    expect(y2.cheaperWrapper).toBe("direct");
+    expect(comparison.pie.rows[2].taxableIncomeNzd).toBeCloseTo(2_192, 6); // FDR = 5% x 43,840
+    expect(y2.pieClosingValueAfterTaxNzd).toBeCloseTo(48_008.785454545456, 6);
+    expect(y2.directClosingValueAfterTaxNzd).toBeCloseTo(48_913.7530909091, 6); // unchanged (direct)
+    expect(y2.differenceNzd).toBeCloseTo(-904.967636363639, 6);
+    expect(y2.cheaperWrapper).toBe("direct"); // unchanged verdict, different margin
 
     const y3 = comparison.years[3];
-    expect(y3.differenceNzd).toBeCloseTo(-184.4, 2);
+    // OLD (wrong): differenceNzd ≈ -184.4.
+    expect(y3.differenceNzd).toBeCloseTo(-721.2482824658218, 6);
     expect(y3.cheaperWrapper).toBe("direct");
 
     const y4 = comparison.years[4];
-    expect(y4.differenceNzd).toBeCloseTo(91.26, 2);
-    expect(y4.cheaperWrapper).toBe("pie");
+    // OLD (wrong): differenceNzd ≈ +91.26 (a reversal back to pie) — under the fix, direct stays
+    // cheaper throughout; there is no reversal.
+    expect(y4.differenceNzd).toBeCloseTo(-495.7889212610753, 6);
+    expect(y4.cheaperWrapper).toBe("direct");
 
+    // OLD (wrong): firstDecisiveYear 1 / "pie", flipYear 2, flipWrapper "direct" — under the fix,
+    // direct is decisively cheaper from year 1 and the comparison never flips.
     expect(comparison.firstDecisiveYear).toBe(1);
-    expect(comparison.firstDecisiveWrapper).toBe("pie");
-    expect(comparison.flipYear).toBe(2);
-    expect(comparison.flipWrapper).toBe("direct");
+    expect(comparison.firstDecisiveWrapper).toBe("direct");
+    expect(comparison.flipYear).toBeNull();
+    expect(comparison.flipWrapper).toBeNull();
   });
 
   // AC8: deflator-invariant (D5) — one shared inflation rate cannot change a year's winner

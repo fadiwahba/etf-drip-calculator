@@ -376,3 +376,347 @@ describe("computeAnnualTax", () => {
     expect(PIR_CAP).toBe(0.28);
   });
 });
+
+// features/pie-de-minimis-wrapper-aware/spec.md — nz-tax.md "⚠️ The de minimis is a
+// DIRECT-HOLDING rule only — it never applies to a PIE". A NZ PIE runs FIF at fund level from the
+// first dollar; the de minimis relief is a direct-holding rule only. Fixture "PIE-30k" below is
+// the spec's own "Before / after" fixture, hand-verified independently by this coder before
+// implementation (see notes.md's arithmetic-check table).
+describe("computeAnnualTax — PIE de minimis is wrapper-aware", () => {
+  function pie30k(overrides: Partial<TaxYearInput> = {}): TaxYearInput {
+    return {
+      wrapper: "pie",
+      foreignCostNzd: 30_000,
+      openingValueNzd: 30_000,
+      closingValueNzd: 32_700,
+      grossDividendsNzd: 975,
+      pir: 0.28,
+      marginalRate: 0.33,
+      ...overrides,
+    };
+  }
+
+  // AC1: a PIE below the de minimis still runs FIF, from the first dollar.
+  it("AC1 — a sub-$50k PIE runs FIF (fdr), not the dividend regime", () => {
+    const result = computeAnnualTax(pie30k());
+    expect(result.regime).toBe("fif");
+    expect(result.method).toBe("fdr");
+    expect(result.aboveThreshold).toBe(false);
+    expect(result.taxableIncomeNzd).toBeCloseTo(1_500, 6);
+    expect(result.rate).toBeCloseTo(0.28, 6);
+    expect(result.grossTaxNzd).toBeCloseTo(420, 6);
+    expect(result.nzTaxPayableNzd).toBeCloseTo(420, 6);
+    expect(result.totalTaxNzd).toBeCloseTo(420, 6);
+    expectAllFinite(result);
+  });
+
+  // AC2: the same fixture as a direct holding is untouched — asserted in the same test body as AC1
+  // so a regression that reverted the gate (both wrappers agreeing again) cannot pass silently.
+  it("AC2 — the same fixture as a direct holding keeps the dividend regime (regression pin)", () => {
+    const pieResult = computeAnnualTax(pie30k());
+    const directResult = computeAnnualTax(pie30k({ wrapper: "direct", pir: undefined }));
+
+    expect(directResult.regime).toBe("dividend");
+    expect(directResult.method).toBe("actual-dividends");
+    expect(directResult.aboveThreshold).toBe(false);
+    expect(directResult.taxableIncomeNzd).toBeCloseTo(975, 6);
+    expect(directResult.rate).toBeCloseTo(0.33, 6);
+    expect(directResult.grossTaxNzd).toBeCloseTo(321.75, 6);
+    expect(directResult.totalTaxNzd).toBeCloseTo(321.75, 6);
+    expectAllFinite(directResult);
+
+    // Same inputs, only the wrapper differs — regimes must differ.
+    expect(pieResult.regime).not.toBe(directResult.regime);
+  });
+
+  // AC3: the PIE drag is 1.40% of opening portfolio value, not 0.91% of the (irrelevant) dividend
+  // stream — calculator-invariants.md #11's "mixing the two bases is a ~100× error" restated in
+  // FIF terms.
+  it("AC3 — PIE drag is 1.40% of value, not the shipped 273 (= 975 × 0.28)", () => {
+    const result = computeAnnualTax(pie30k());
+    const openingValueNzd = 30_000; // pie30k()'s own openingValueNzd, restated here since
+    // TaxYearResult does not echo the input back (spec.md AC3: "grossTaxNzd / openingValueNzd").
+    expect(result.grossTaxNzd / openingValueNzd).toBeCloseTo(0.014, 10);
+    expect(result.grossTaxNzd).toBeCloseTo(FDR_RATE * 30_000 * 0.28, 6);
+    expect(result.grossTaxNzd).not.toBeCloseTo(273, 6);
+  });
+
+  // AC4: boundary — cost exactly at the threshold. Direct stays in the dividend regime (untouched);
+  // PIE runs FIF regardless.
+  it("AC4 — boundary at the threshold: direct untouched, PIE runs FIF anyway", () => {
+    const directResult = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 50_000,
+      openingValueNzd: 50_000,
+      closingValueNzd: 54_000,
+      grossDividendsNzd: 1_000,
+      marginalRate: 0.33,
+    });
+    expect(directResult.regime).toBe("dividend");
+    expect(directResult.aboveThreshold).toBe(false);
+    expect(directResult.taxableIncomeNzd).toBeCloseTo(1_000, 6);
+    expect(directResult.grossTaxNzd).toBeCloseTo(330, 6);
+    expectAllFinite(directResult);
+
+    const pieResult = computeAnnualTax({
+      wrapper: "pie",
+      foreignCostNzd: 50_000,
+      openingValueNzd: 50_000,
+      closingValueNzd: 54_000,
+      grossDividendsNzd: 1_000,
+      pir: 0.28,
+      marginalRate: 0.33,
+    });
+    expect(pieResult.regime).toBe("fif");
+    expect(pieResult.method).toBe("fdr");
+    expect(pieResult.aboveThreshold).toBe(false);
+    expect(pieResult.taxableIncomeNzd).toBeCloseTo(2_500, 6);
+    expect(pieResult.grossTaxNzd).toBeCloseTo(700, 6);
+    expectAllFinite(pieResult);
+  });
+
+  // AC5: boundary — one cent over. Direct jumps into FIF; PIE's result is identical to AC4's PIE
+  // (its regime/tax never depended on the threshold in the first place).
+  it("AC5 — one cent over: direct jumps to FIF; PIE is unchanged from AC4's boundary", () => {
+    const directResult = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 50_000.01,
+      openingValueNzd: 50_000,
+      closingValueNzd: 54_000,
+      grossDividendsNzd: 1_000,
+      marginalRate: 0.33,
+    });
+    expect(directResult.regime).toBe("fif");
+    expect(directResult.aboveThreshold).toBe(true);
+    expect(directResult.taxableIncomeNzd).toBeCloseTo(2_500, 6);
+    expect(directResult.grossTaxNzd).toBeCloseTo(825, 6);
+
+    const pieResult = computeAnnualTax({
+      wrapper: "pie",
+      foreignCostNzd: 50_000.01,
+      openingValueNzd: 50_000,
+      closingValueNzd: 54_000,
+      grossDividendsNzd: 1_000,
+      pir: 0.28,
+      marginalRate: 0.33,
+    });
+    expect(pieResult.regime).toBe("fif");
+    expect(pieResult.aboveThreshold).toBe(true);
+    expect(pieResult.grossTaxNzd).toBeCloseTo(700, 6);
+  });
+
+  // AC6: a PIE above the de minimis is byte-identical to the pre-fix behaviour (regression pin) —
+  // the gate must only change the sub-$50k path.
+  it("AC6 — a PIE above the de minimis is unchanged (regression pin)", () => {
+    const result = computeAnnualTax({
+      wrapper: "pie",
+      foreignCostNzd: 200_000,
+      openingValueNzd: 200_000,
+      closingValueNzd: 240_000,
+      grossDividendsNzd: 8_000,
+      pir: 0.28,
+      usWithholdingPaidNzd: 1_000,
+      marginalRate: 0.33,
+    });
+    expect(result.regime).toBe("fif");
+    expect(result.method).toBe("fdr");
+    expect(result.aboveThreshold).toBe(true);
+    expect(result.taxableIncomeNzd).toBeCloseTo(10_000, 6);
+    expect(result.rate).toBeCloseTo(0.28, 6);
+    expect(result.grossTaxNzd).toBeCloseTo(2_800, 6);
+    expect(result.foreignTaxCreditNzd).toBeCloseTo(1_000, 6);
+    expect(result.nzTaxPayableNzd).toBeCloseTo(1_800, 6);
+    expect(result.totalTaxNzd).toBeCloseTo(2_800, 6);
+    expectAllFinite(result);
+  });
+
+  // AC7: direct holdings at every size are byte-identical (regression pin) — three fixtures copied
+  // from the pre-existing suite (AC1/AC2/AC8 above).
+  it("AC7 — direct holdings at every size are unchanged (regression pin)", () => {
+    const below = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 40_000,
+      openingValueNzd: 0,
+      closingValueNzd: 0,
+      grossDividendsNzd: 1_200,
+      marginalRate: 0.33,
+      usWithholdingPaidNzd: 180,
+    });
+    expect(below.regime).toBe("dividend");
+    expect(below.taxableIncomeNzd).toBeCloseTo(1_200, 6);
+    expect(below.grossTaxNzd).toBeCloseTo(396, 6);
+    expect(below.foreignTaxCreditNzd).toBeCloseTo(180, 6);
+    expect(below.nzTaxPayableNzd).toBeCloseTo(216, 6);
+    expect(below.totalTaxNzd).toBeCloseTo(396, 6);
+
+    const above = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 200_000,
+      openingValueNzd: 200_000,
+      closingValueNzd: 230_000,
+      grossDividendsNzd: 0,
+      marginalRate: 0.33,
+    });
+    expect(above.regime).toBe("fif");
+    expect(above.method).toBe("fdr");
+    expect(above.taxableIncomeNzd).toBeCloseTo(10_000, 6);
+    expect(above.grossTaxNzd).toBeCloseTo(3_300, 6);
+
+    const overriddenThreshold = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 60_000,
+      openingValueNzd: 0,
+      closingValueNzd: 0,
+      grossDividendsNzd: 1_800,
+      marginalRate: 0.33,
+      fifThresholdNzd: 100_000,
+    });
+    expect(overriddenThreshold.regime).toBe("dividend");
+    expect(overriddenThreshold.grossTaxNzd).toBeCloseTo(594, 6);
+  });
+
+  // AC8 (decision 2): fifThresholdNzd cannot change a PIE's tax — it still sets the reported
+  // `aboveThreshold` fact, and validation still applies (fifThresholdNzd: 0 still throws).
+  it("AC8 — fifThresholdNzd cannot change a PIE's tax, but still sets aboveThreshold and is still validated", () => {
+    const noOverride = computeAnnualTax(pie30k());
+    const highThreshold = computeAnnualTax(pie30k({ fifThresholdNzd: 100_000 }));
+    const lowThreshold = computeAnnualTax(pie30k({ fifThresholdNzd: 10_000 }));
+
+    for (const result of [noOverride, highThreshold, lowThreshold]) {
+      expect(result.regime).toBe("fif");
+      expect(result.method).toBe("fdr");
+      expect(result.taxableIncomeNzd).toBeCloseTo(1_500, 6);
+      expect(result.grossTaxNzd).toBeCloseTo(420, 6);
+    }
+    expect(noOverride.aboveThreshold).toBe(false);
+    expect(highThreshold.aboveThreshold).toBe(false);
+    expect(lowThreshold.aboveThreshold).toBe(true);
+
+    expect(() => computeAnnualTax(pie30k({ fifThresholdNzd: 0 }))).toThrow(TaxInputError);
+    expect(() => computeAnnualTax(pie30k({ fifThresholdNzd: 0 }))).toThrow(/fifThresholdNzd/);
+  });
+
+  // AC9 (decision 4): the lower-of FDR/CV rule still applies to a PIE below the threshold.
+  describe("AC9 — lower-of FDR/CV still applies to a PIE below the threshold", () => {
+    it("(a) a losing year floors CV at zero, so tax is $0 even though FDR is positive", () => {
+      const result = computeAnnualTax({
+        wrapper: "pie",
+        foreignCostNzd: 30_000,
+        openingValueNzd: 30_000,
+        closingValueNzd: 24_000,
+        grossDividendsNzd: 900,
+        pir: 0.28,
+        usWithholdingPaidNzd: 135,
+        marginalRate: 0.33,
+      });
+      expect(result.method).toBe("cv");
+      expect(result.taxableIncomeNzd).toBeCloseTo(0, 6);
+      expect(result.grossTaxNzd).toBeCloseTo(0, 6);
+      expect(result.foreignTaxCreditNzd).toBeCloseTo(0, 6);
+      expect(result.nzTaxPayableNzd).toBeCloseTo(0, 6);
+      expect(result.totalTaxNzd).toBeCloseTo(135, 6);
+      expectAllFinite(result);
+    });
+
+    it("(b) an exact FDR/CV tie resolves to method fdr, per spec", () => {
+      const result = computeAnnualTax({
+        wrapper: "pie",
+        foreignCostNzd: 30_000,
+        openingValueNzd: 30_000,
+        closingValueNzd: 31_500,
+        grossDividendsNzd: 0,
+        pir: 0.28,
+        marginalRate: 0.33,
+      });
+      expect(result.method).toBe("fdr");
+      expect(result.taxableIncomeNzd).toBeCloseTo(1_500, 6);
+      expect(result.grossTaxNzd).toBeCloseTo(420, 6);
+      expectAllFinite(result);
+    });
+  });
+
+  // AC10: a projection crossing $50k mid-run diverges by wrapper — three independent calls per
+  // wrapper, mirroring the pre-existing "AC9 — threshold crossing is decided independently for each
+  // year" direct-only test above, but comparing both wrappers side by side.
+  it("AC10 — a run crossing $50k mid-projection diverges by wrapper", () => {
+    const directY1 = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 45_000,
+      openingValueNzd: 45_000,
+      closingValueNzd: 49_500,
+      grossDividendsNzd: 1_350,
+      purchasesNzd: 0,
+      marginalRate: 0.33,
+    });
+    expect(directY1.regime).toBe("dividend");
+    expect(directY1.grossTaxNzd).toBeCloseTo(445.5, 6);
+
+    const directY2 = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 52_000,
+      openingValueNzd: 55_000,
+      closingValueNzd: 62_000,
+      grossDividendsNzd: 1_600,
+      purchasesNzd: 5_000,
+      marginalRate: 0.33,
+    });
+    expect(directY2.regime).toBe("fif");
+    expect(directY2.grossTaxNzd).toBeCloseTo(907.5, 6);
+
+    const directY3 = computeAnnualTax({
+      wrapper: "direct",
+      foreignCostNzd: 60_000,
+      openingValueNzd: 62_000,
+      closingValueNzd: 70_000,
+      grossDividendsNzd: 1_800,
+      purchasesNzd: 3_000,
+      marginalRate: 0.33,
+    });
+    expect(directY3.regime).toBe("fif");
+    expect(directY3.grossTaxNzd).toBeCloseTo(1_023, 6);
+
+    const pieY1 = computeAnnualTax({
+      wrapper: "pie",
+      foreignCostNzd: 45_000,
+      openingValueNzd: 45_000,
+      closingValueNzd: 49_500,
+      grossDividendsNzd: 1_350,
+      purchasesNzd: 0,
+      pir: 0.28,
+      marginalRate: 0.33,
+    });
+    expect(pieY1.regime).toBe("fif");
+    expect(pieY1.taxableIncomeNzd).toBeCloseTo(2_250, 6);
+    expect(pieY1.grossTaxNzd).toBeCloseTo(630, 6);
+    // Not the shipped-bug shape (dividends × PIR): 1,350 × 0.28 = 378.
+    expect(pieY1.grossTaxNzd).not.toBeCloseTo(378, 6);
+
+    const pieY2 = computeAnnualTax({
+      wrapper: "pie",
+      foreignCostNzd: 52_000,
+      openingValueNzd: 55_000,
+      closingValueNzd: 62_000,
+      grossDividendsNzd: 1_600,
+      purchasesNzd: 5_000,
+      pir: 0.28,
+      marginalRate: 0.33,
+    });
+    expect(pieY2.regime).toBe("fif");
+    expect(pieY2.taxableIncomeNzd).toBeCloseTo(2_750, 6);
+    expect(pieY2.grossTaxNzd).toBeCloseTo(770, 6);
+
+    const pieY3 = computeAnnualTax({
+      wrapper: "pie",
+      foreignCostNzd: 60_000,
+      openingValueNzd: 62_000,
+      closingValueNzd: 70_000,
+      grossDividendsNzd: 1_800,
+      purchasesNzd: 3_000,
+      pir: 0.28,
+      marginalRate: 0.33,
+    });
+    expect(pieY3.regime).toBe("fif");
+    expect(pieY3.taxableIncomeNzd).toBeCloseTo(3_100, 6);
+    expect(pieY3.grossTaxNzd).toBeCloseTo(868, 6);
+  });
+});

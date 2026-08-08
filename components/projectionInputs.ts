@@ -15,6 +15,7 @@ import {
   type ProjectionInput,
   type ProjectionResult,
   type RealProjectionResult,
+  type ProjectionRow,
   type IncomeCrossover,
   type WrapperComparison,
 } from "@/lib/projection";
@@ -557,12 +558,22 @@ function formatSingleModeExplainer(
       ? ""
       : ` Regime changes to ${formatRegimeWord(value.rows[changeYear].taxRegime)} in year ${changeYear}.`;
 
+  // features/pie-de-minimis-wrapper-aware/spec.md AC11(a) / nz-tax.md "the de minimis is a
+  // DIRECT-HOLDING rule only — it never applies to a PIE": a PIE's year1.aboveThreshold is
+  // informational only (lib/nzTax.ts) and never means "below the de minimis" the way it does for a
+  // direct holding, so this line must not claim a threshold outcome the PIE never got. Direct's
+  // wording is untouched (AC11(a): "the 'direct' line keeps its existing wording unchanged").
+  const thresholdClause =
+    wrapper === "pie"
+      ? "FIF applies from the first dollar — the de minimis is a direct-holding rule only"
+      : `${year1.aboveThreshold ? "above" : "below"} the ${formatNzd(
+          DEFAULT_FIF_DE_MINIMIS_NZD
+        )} de minimis`;
+
   return (
     `${wrapperLabel}: Year 1 is ${formatRegimeWord(year1.taxRegime)} (${formatMethodWord(
       year1.taxMethod
-    )}), ${year1.aboveThreshold ? "above" : "below"} the ${formatNzd(
-      DEFAULT_FIF_DE_MINIMIS_NZD
-    )} de minimis, taxed at ${rateLabel}.${withholdingText}${changeText}`
+    )}), ${thresholdClause}, taxed at ${rateLabel}.${withholdingText}${changeText}`
   );
 }
 
@@ -597,4 +608,25 @@ export function formatTaxModeExplainer(form: ProjectionFormState, run: RunProjec
     return formatCompareExplainer(form, run.comparison);
   }
   return formatSingleModeExplainer(form, form.taxMode === "pie" ? "pie" : "direct", run.value);
+}
+
+// features/pie-de-minimis-wrapper-aware/spec.md AC11(b) / nz-tax.md non-negotiable 4: discloses
+// regime, method and threshold per year. Moved here from InvestmentProjectionCalculator.tsx (was
+// `formatRegimeCell`, InvestmentProjectionCalculator.tsx:64-69) so it can be unit-tested without
+// importing a .tsx into this module's node-env test suite (Coder Guardrails). "$50k" is display
+// text for the engine's default fifThresholdNzd (this UI never overrides it) — not a re-derived tax
+// figure. A PIE row can be `regime: "fif"` with `aboveThreshold: false` (nz-tax.md decision 3:
+// aboveThreshold is informational only for a PIE) — the old unconditional "· above $50k" suffix on
+// every FIF row was flatly false for that case (a $30k PIE prints "above $50k"), so the suffix is
+// now conditional on the row's own `aboveThreshold` fact. Direct rows (always `aboveThreshold: true`
+// whenever they reach the fif regime, since the de minimis gates them into it) render byte-identical
+// to before.
+export function formatRegimeCell(
+  row: Pick<ProjectionRow, "taxRegime" | "taxMethod" | "aboveThreshold">
+): string {
+  if (row.taxRegime === "fif") {
+    const thresholdSuffix = row.aboveThreshold ? " · above $50k" : "";
+    return `FIF · ${row.taxMethod.toUpperCase()}${thresholdSuffix}`;
+  }
+  return "Dividend · below";
 }

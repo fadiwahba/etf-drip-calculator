@@ -25,6 +25,10 @@ export interface TaxYearInput {
 export interface TaxYearResult {
   regime: "fif" | "dividend";
   method: "fdr" | "cv" | "actual-dividends";
+  // Literal `foreignCostNzd > fifThresholdNzd`, for both wrappers (nz-tax.md decision 3). For a
+  // PIE this is informational only — it never decides `regime` (a PIE is always "fif", see
+  // computeAnnualTax below). `regime === "fif" && aboveThreshold === false` is how a caller tells
+  // "PIE below the de minimis" apart from "direct holding above it".
   aboveThreshold: boolean;
   taxableIncomeNzd: number;
   rate: number;
@@ -137,15 +141,20 @@ export function computeAnnualTax(input: TaxYearInput): TaxYearResult {
   // which is the convention .claude/rules/nz-tax.md specifies for this calculator's scope.
   const rate = input.wrapper === "pie" ? Math.min(resolvePir(input), PIR_CAP) : input.marginalRate;
 
-  // De minimis tests cost, not market value (nz-tax.md — "Threshold crossing matters").
+  // De minimis tests cost, not market value (nz-tax.md — "Threshold crossing matters"). Kept as a
+  // literal fact for both wrappers (nz-tax.md decision 3) — it no longer alone decides `regime`.
   const aboveThreshold = input.foreignCostNzd > fifThresholdNzd;
 
   let regime: "fif" | "dividend";
   let method: "fdr" | "cv" | "actual-dividends";
   let taxableIncomeNzd: number;
 
-  if (!aboveThreshold) {
-    // Below the de minimis: FIF does not apply, actual dividends are taxed instead.
+  // nz-tax.md "⚠️ The de minimis is a DIRECT-HOLDING rule only — it never applies to a PIE": a PIE
+  // runs the FIF calc at fund level from the first dollar, so only a direct holding below the
+  // threshold gets dividend-regime relief. A wrapper-blind `!aboveThreshold` check here gave a
+  // sub-$50k PIE a 0.91% drag where the correct figure is 1.40% (docs/AUDIT-2026-08-08-fable.md #1).
+  if (input.wrapper === "direct" && !aboveThreshold) {
+    // Below the de minimis, direct holding only: FIF does not apply, actual dividends are taxed.
     regime = "dividend";
     method = "actual-dividends";
     taxableIncomeNzd = input.grossDividendsNzd;

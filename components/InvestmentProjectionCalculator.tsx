@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChartNoAxesCombined } from "lucide-react";
 import { getFund } from "@/lib/funds";
-import type { ProjectionRow, ProjectionResult, RealProjectionResult } from "@/lib/projection";
+import type { ProjectionResult, RealProjectionResult } from "@/lib/projection";
 import {
   buildProjectionInput,
   runProjection,
@@ -15,6 +15,7 @@ import {
   formatNzd,
   formatPhase,
   formatTaxModeExplainer,
+  formatRegimeCell,
   type ProjectionFormState,
 } from "@/components/projectionInputs";
 import type { IncomeCrossover } from "@/lib/projection";
@@ -56,16 +57,6 @@ function buildDefaultFormState(): ProjectionFormState {
 function FieldError({ message }: { message?: string }) {
   if (!message) return null;
   return <p className="text-xs text-red-600">{message}</p>;
-}
-
-// AC12 (nz-tax.md non-negotiable 4): discloses regime, method and threshold per year. "$50k" is
-// display text for the engine's default fifThresholdNzd (this UI never overrides it) — not a
-// re-derived tax figure.
-function formatRegimeCell(row: ProjectionRow): string {
-  if (row.taxRegime === "fif") {
-    return `FIF · ${row.taxMethod.toUpperCase()} · above $50k`;
-  }
-  return "Dividend · below";
 }
 
 // features/crossover-target-income/spec.md AC17: string formatting only, reading fields

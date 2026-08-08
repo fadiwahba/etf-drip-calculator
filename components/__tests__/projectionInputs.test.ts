@@ -10,6 +10,7 @@ import {
   formatNzd,
   formatPhase,
   formatTaxModeExplainer,
+  formatRegimeCell,
   type ProjectionFormState,
 } from "@/components/projectionInputs";
 import { getFund, MissingAssumptionError } from "@/lib/funds";
@@ -604,6 +605,61 @@ describe("tax-mode-compare mapper", () => {
     });
   });
 
+  // features/pie-de-minimis-wrapper-aware/spec.md AC11(a): no UI text may claim a de minimis
+  // outcome a PIE never got.
+  describe("AC11(a) — a sub-$50k PIE's explainer never claims a de minimis outcome", () => {
+    it("a sub-$50k PIE run states FIF-from-first-dollar, not 'above'/'below the $50,000 de minimis'", () => {
+      const form = makeForm({ taxMode: "pie", initialCapital: "30000", pirPercent: "28" });
+      const run = runProjection(form);
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.value.rows[1].taxRegime).toBe("fif"); // sanity: this run is the sub-$50k PIE case
+      expect(run.value.rows[1].aboveThreshold).toBe(false);
+
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).not.toContain("above the $50,000 de minimis");
+      expect(explainer).not.toContain("below the $50,000 de minimis");
+      expect(explainer).toContain("FIF applies from the first dollar");
+      expect(explainer).toContain("direct-holding rule");
+      expect(explainer).toContain("NZ PIE");
+      expect(explainer).toContain("PIR 28.0%");
+    });
+
+    it("the 'direct' explainer line keeps its existing wording unchanged", () => {
+      // Same assertions as the pre-existing "UI-default form ('direct')" test below — pinned again
+      // here, right beside the PIE case above, so a change to the direct branch cannot pass
+      // unnoticed alongside the PIE-only fix.
+      const form = makeForm();
+      const run = runProjection(form);
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).toContain("above");
+      expect(explainer).toContain("$50,000");
+      expect(explainer).toContain("de minimis");
+    });
+  });
+
+  // features/pie-de-minimis-wrapper-aware/spec.md AC11(b): a row with taxRegime "fif" and
+  // aboveThreshold false (only reachable by a sub-$50k PIE, since a direct row only ever reaches
+  // "fif" by crossing the threshold) must not render "above $50k".
+  describe("AC11(b) — formatRegimeCell never renders 'above $50k' for a row that isn't", () => {
+    it("fif + aboveThreshold false (sub-$50k PIE) omits the threshold claim", () => {
+      const cell = formatRegimeCell({ taxRegime: "fif", taxMethod: "fdr", aboveThreshold: false });
+      expect(cell).not.toContain("above $50k");
+      expect(cell).toBe("FIF · FDR");
+    });
+
+    it("fif + aboveThreshold true renders exactly the pre-existing string (regression pin)", () => {
+      const cell = formatRegimeCell({ taxRegime: "fif", taxMethod: "fdr", aboveThreshold: true });
+      expect(cell).toBe("FIF · FDR · above $50k");
+    });
+
+    it("dividend rows keep their exact current string, whatever aboveThreshold is (regression pin)", () => {
+      expect(
+        formatRegimeCell({ taxRegime: "dividend", taxMethod: "actual-dividends", aboveThreshold: false })
+      ).toBe("Dividend · below");
+    });
+  });
+
   describe("AC14 — formatTaxModeExplainer, single modes", () => {
     it("UI-default form ('direct')", () => {
       const form = makeForm();
@@ -670,34 +726,39 @@ describe("tax-mode-compare mapper", () => {
     });
 
     it("names the flip year and the wrapper it flips to when the comparison flips", () => {
-      // A below-then-above-de-minimis scenario, Fixture-F-shaped like
-      // lib/__tests__/projection.test.ts's own AC7: a low dividend yield keeps pie ahead while both
-      // legs are below the $50k de minimis, then pie's FDR drag (once its own cost basis crosses
-      // first) briefly costs it more than direct's still-below-threshold actual-dividend tax.
-      // Verified against the real (unmodified) runProjection() output before being pinned here —
-      // capital/yield/term were searched, not guessed, specifically so this branch is genuinely
-      // exercised rather than passing vacuously (see notes.md).
+      // features/pie-de-minimis-wrapper-aware/spec.md made a PIE run FIF from the first dollar
+      // (nz-tax.md "the de minimis is a DIRECT-HOLDING rule only") — a PIE's FDR drag is a flat
+      // 5% x PIR-cap = 1.4% of value regardless of cost, from year 1. So with a low dividend yield
+      // and a high marginal rate, DIRECT starts cheaper (its actual-dividend tax on a thin yield is
+      // less than 1.4% of value), then loses the lead once its own cost basis crosses the $50k de
+      // minimis and it switches to FDR at the 39% marginal rate (1.95% of value) — now above the
+      // PIE's flat 1.4%. So the flip direction is direct -> pie, the opposite of what an
+      // (incorrect) sub-$50k-PIE-escapes-FIF model would have produced. Verified against the real
+      // (unmodified) runProjection() output on the corrected engine before being pinned here —
+      // capital/yield/term were searched over, not guessed, specifically so this branch is
+      // genuinely exercised rather than passing vacuously (see notes.md "Cycle 2").
       const form = makeForm({
         taxMode: "compare",
-        initialCapital: "46230",
+        initialCapital: "48000",
         extraMonthlyContribution: "0",
-        dividendYieldPercent: "1",
+        dividendYieldPercent: "1.5",
         pirPercent: "28",
         marginalRatePercent: "39",
         usWithholdingPercent: "0",
-        termYears: "10",
+        termYears: "12",
       });
       const run = runProjection(form);
       expect(run.ok).toBe(true);
       if (!run.ok || !run.comparison) return;
-      expect(run.comparison.flipYear).not.toBeNull();
-      expect(run.comparison.flipWrapper).toBe("direct");
+      expect(run.comparison.firstDecisiveWrapper).toBe("direct");
+      expect(run.comparison.flipYear).toBe(6);
+      expect(run.comparison.flipWrapper).toBe("pie");
       const explainer = formatTaxModeExplainer(form, run);
       // Pinned as one substring naming the flip wrapper right beside its year — a looser pair of
-      // checks (year present + "US ETFs (direct)" present anywhere) would pass even if the flip
-      // wrapper label were swapped, since "US ETFs (direct)" already appears earlier in the line as
-      // the wrapper's own rate label.
-      expect(explainer).toContain(`flips to US ETFs (direct) in year ${run.comparison.flipYear}`);
+      // checks (year present + "NZ PIE" present anywhere) would pass even if the flip wrapper label
+      // were swapped, since "NZ PIE" already appears earlier in the line as the wrapper's own rate
+      // label.
+      expect(explainer).toContain(`flips to NZ PIE in year ${run.comparison.flipYear}`);
       expect(explainer).not.toMatch(/NaN|Infinity|undefined/);
     });
   });
