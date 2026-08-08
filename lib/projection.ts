@@ -554,3 +554,82 @@ export function toRealTerms(result: ProjectionResult, inflationRate: number): Re
     inflationRate,
   };
 }
+
+// features/crossover-target-income/spec.md — the PRD's headline question: "when can I live off my
+// dividends?" A pure view over an already-deflated RealProjectionResult (spec C3), so this
+// function does zero `(1+i)` arithmetic itself and never calls project() a second time (spec
+// "One project() call" / AC16 of the mapper's own ACs).
+export interface IncomeCrossover {
+  targetAnnualIncomeNzd: number;
+  inflationRate: number;
+  netIncomeByYearNzd: number[];
+  firstYearAboveTarget: number | null;
+  crossoverYear: number | null;
+  incomeAtCrossoverNzd: number | null;
+  finalYearNetIncomeNzd: number;
+}
+
+export function findIncomeCrossover(
+  real: RealProjectionResult,
+  targetAnnualIncomeNzd: number
+): IncomeCrossover {
+  // Reuses the file's existing finite/non-negative check (spec C1 guardrail: "reuse the file's
+  // existing validation helpers") — 0 is a legitimate target (e.g. "any dividend income at all"),
+  // a negative target is not a real question to ask.
+  assertFiniteNonNegative(targetAnnualIncomeNzd, "targetAnnualIncomeNzd");
+
+  // C2: net(t) = gross - WHT - NZ tax payable, identically gross - totalTaxNzd. WHT is taken at
+  // source and never reaches the investor; the NZ liability is a compulsory whole-year cash bill
+  // (a deemed return on portfolio value under FIF, not a slice of the dividend) that must still be
+  // paid out of income. Fees are deliberately excluded: the fund and platform net them from the
+  // assets (project() cuts the share count for them), never bill them against dividend cash — their
+  // drag already shows up as fewer shares, and thus lower gross dividends, in later years. Never
+  // clamped: a negative net year is a real answer, not an error.
+  const netIncomeByYearNzd = real.rows.map((row) => row.grossDividendsNzd - row.totalTaxNzd);
+
+  // C4: every phase is scanned, years 1..N — gating on Draw would report "never" for the UI
+  // default (all-Accumulate), the primary persona; the reading is "if you switched to drawing
+  // then". Year 0 is the pre-growth snapshot and is deliberately excluded from both scans below.
+  let firstYearAboveTarget: number | null = null;
+  for (let year = 1; year < netIncomeByYearNzd.length; year++) {
+    if (netIncomeByYearNzd[year] >= targetAnnualIncomeNzd) {
+      firstYearAboveTarget = year;
+      break;
+    }
+  }
+
+  // C5: "sustained", not "first" — a year above target followed by a shortfall (e.g. a de minimis
+  // threshold crossing that raises tax) is not a plan the investor can actually live off. The
+  // smallest year y such that every t in [y, N] clears the target.
+  let crossoverYear: number | null = null;
+  for (let year = 1; year < netIncomeByYearNzd.length; year++) {
+    let sustainedToEnd = true;
+    for (let t = year; t < netIncomeByYearNzd.length; t++) {
+      if (netIncomeByYearNzd[t] < targetAnnualIncomeNzd) {
+        sustainedToEnd = false;
+        break;
+      }
+    }
+    if (sustainedToEnd) {
+      crossoverYear = year;
+      break;
+    }
+  }
+
+  const incomeAtCrossoverNzd = crossoverYear === null ? null : netIncomeByYearNzd[crossoverYear];
+  // Always populated, even when never crossed, so the UI can still say something honest instead of
+  // just "never" (spec C5).
+  const finalYearNetIncomeNzd = netIncomeByYearNzd[netIncomeByYearNzd.length - 1];
+
+  return {
+    targetAnnualIncomeNzd,
+    // Echoed from the real result, not re-derived — this function does no deflator arithmetic of
+    // its own (spec C3).
+    inflationRate: real.inflationRate,
+    netIncomeByYearNzd,
+    firstYearAboveTarget,
+    crossoverYear,
+    incomeAtCrossoverNzd,
+    finalYearNetIncomeNzd,
+  };
+}

@@ -9,10 +9,12 @@
 import {
   project,
   toRealTerms,
+  findIncomeCrossover,
   ProjectionInputError,
   type ProjectionInput,
   type ProjectionResult,
   type RealProjectionResult,
+  type IncomeCrossover,
 } from "@/lib/projection";
 import { TaxInputError, type Wrapper } from "@/lib/nzTax";
 import { MissingAssumptionError, type Fund } from "@/lib/funds";
@@ -87,6 +89,11 @@ export interface ProjectionFormState {
   // place that distinction is made (mirrors the contributionsStopYear/drawdownStartYear pattern).
   showRealTerms: boolean;
   inflationRatePercent: string;
+  // features/crossover-target-income/spec.md: "" maps to no target, never to 0 (invariant 14) —
+  // parseTargetIncome below is the one place that distinction is made, mirroring
+  // inflationRatePercent's own pattern. Meaningful regardless of showRealTerms (parsed the same
+  // either way); runProjection only ever computes a crossover when a real view also exists (C3).
+  targetAnnualIncome: string;
 }
 
 export type FieldErrors = Record<string, string>;
@@ -175,6 +182,24 @@ export function parseInflationRate(form: ProjectionFormState): InflationRatePars
   return { ok: true, value: parsed.value / 100 };
 }
 
+type TargetIncomeParseResult = { ok: true; value: number | undefined } | { ok: false; error: string };
+
+// features/crossover-target-income/spec.md AC13/invariant 14: blank is a real "no target" state,
+// distinct from "0" — a `Number("")` coercion here would silently turn "unset" into a $0 target and
+// hide the whole table behind a crossover that reports "year 1" for everyone. Not gated on
+// showRealTerms (unlike parseInflationRate): the field is meaningful on its own, and it is
+// runProjection's job, not this parse, to decide a crossover needs a real view to mean anything.
+export function parseTargetIncome(form: ProjectionFormState): TargetIncomeParseResult {
+  if (form.targetAnnualIncome.trim() === "") {
+    return { ok: true, value: undefined };
+  }
+  const parsed = parseNumericField(form.targetAnnualIncome, "Target annual income (NZD)", { min: 0 });
+  if (!parsed.ok) {
+    return { ok: false, error: parsed.error };
+  }
+  return { ok: true, value: parsed.value };
+}
+
 export function buildProjectionInput(form: ProjectionFormState): BuildProjectionInputResult {
   const initialCapital = parseNumericField(form.initialCapital, "Initial Capital (NZD)", { min: 0 });
   const termYears = parseNumericField(form.termYears, "Investment Term (years)", {
@@ -212,6 +237,7 @@ export function buildProjectionInput(form: ProjectionFormState): BuildProjection
     "Start drawing dividends from year"
   );
   const inflationRateResult = parseInflationRate(form);
+  const targetIncomeResult = parseTargetIncome(form);
 
   const errors: FieldErrors = {};
   if (!initialCapital.ok) errors.initialCapital = initialCapital.error;
@@ -232,6 +258,10 @@ export function buildProjectionInput(form: ProjectionFormState): BuildProjection
   // below — R1: inflation is not a ProjectionInput, so a mapper-level check on the field cannot
   // let its parsed number leak into the engine's input shape.
   if (!inflationRateResult.ok) errors.inflationRatePercent = inflationRateResult.error;
+  // targetAnnualIncome is validated here (AC14) but, like inflationRatePercent above, deliberately
+  // never written into `value` below — it is not a ProjectionInput field (same reasoning as R1's
+  // "inflation is not a ProjectionInput").
+  if (!targetIncomeResult.ok) errors.targetAnnualIncome = targetIncomeResult.error;
 
   if (Object.keys(errors).length > 0) {
     return { ok: false, errors };
@@ -316,7 +346,15 @@ export function seedAssumptionsFromFund(fund: Fund): SeedAssumptionResult {
 }
 
 export type RunProjectionResult =
-  | { ok: true; value: ProjectionResult; real: RealProjectionResult | undefined }
+  | {
+      ok: true;
+      value: ProjectionResult;
+      real: RealProjectionResult | undefined;
+      // features/crossover-target-income/spec.md C3: only ever populated alongside `real` — a
+      // nominal answer to a real ("today's dollars") question is the wrong-number failure mode, so
+      // the toggle being off (real undefined) means no crossover is reported either.
+      crossover: IncomeCrossover | undefined;
+    }
   | { ok: false; errors: string[] };
 
 // AC9: the three engine error classes this module imports (ProjectionInputError, TaxInputError,
@@ -351,7 +389,8 @@ export function runProjection(form: ProjectionFormState): RunProjectionResult {
   }
 
   if (!form.showRealTerms) {
-    return { ok: true, value, real: undefined };
+    // C3: no real view, so no crossover either, whatever the target field says.
+    return { ok: true, value, real: undefined, crossover: undefined };
   }
 
   // buildProjectionInput already returned ok:false above if inflationRatePercent failed to parse,
@@ -370,12 +409,27 @@ export function runProjection(form: ProjectionFormState): RunProjectionResult {
     );
   }
 
+  let real: RealProjectionResult;
   try {
-    const real = toRealTerms(value, inflationRate);
-    return { ok: true, value, real };
+    real = toRealTerms(value, inflationRate);
   } catch (error) {
     return { ok: false, errors: [formatEngineError(error)] };
   }
+
+  // Same "already validated by buildProjectionInput" re-parse pattern as inflationRate above — a
+  // failed parse here is unreachable once buildProjectionInput returned ok:true.
+  const targetIncomeResult = parseTargetIncome(form);
+  if (!targetIncomeResult.ok) {
+    throw new Error(
+      "unreachable: parseTargetIncome failed after buildProjectionInput validated targetAnnualIncome"
+    );
+  }
+  const target = targetIncomeResult.value;
+  // AC16: one project() call total — findIncomeCrossover only ever reads the `real` result already
+  // computed above, never re-running project() or toRealTerms() for the target.
+  const crossover = target === undefined ? undefined : findIncomeCrossover(real, target);
+
+  return { ok: true, value, real, crossover };
 }
 
 // The only place a phase is turned into display text (Constitution §2 — no phase logic or string

@@ -23,6 +23,7 @@ import {
   formatPhase,
   type ProjectionFormState,
 } from "@/components/projectionInputs";
+import type { IncomeCrossover } from "@/lib/projection";
 // Using HTML table elements with Tailwind styling instead of shadcn/ui table components
 
 // Every number this component shows comes from `project()` (lib/projection.ts) via
@@ -52,6 +53,9 @@ function buildDefaultFormState(): ProjectionFormState {
     // stated in the UI text below (Constitution §3), not a published statistic.
     showRealTerms: true,
     inflationRatePercent: "3",
+    // features/crossover-target-income/spec.md AC17: "80000" is a placeholder starting point, not
+    // a recommendation — stated in the field's own helper text below.
+    targetAnnualIncome: "80000",
   };
 }
 
@@ -68,6 +72,16 @@ function formatRegimeCell(row: ProjectionRow): string {
     return `FIF · ${row.taxMethod.toUpperCase()} · above $50k`;
   }
   return "Dividend · below";
+}
+
+// features/crossover-target-income/spec.md AC17: string formatting only, reading fields
+// findIncomeCrossover already computed — no income or deflator arithmetic here (Constitution §2),
+// same convention as formatRegimeCell above.
+function formatCrossoverHeadline(crossover: IncomeCrossover): string {
+  const lastYear = crossover.netIncomeByYearNzd.length - 1;
+  return crossover.crossoverYear === null
+    ? `Not reached within ${lastYear} years`
+    : `Year ${crossover.crossoverYear}`;
 }
 
 const InvestmentProjectionCalculator = () => {
@@ -395,6 +409,24 @@ const InvestmentProjectionCalculator = () => {
                   3% is a chosen planning assumption, not a published forecast.
                 </p>
               </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="targetAnnualIncome" className="text-slate-700 font-medium">
+                  Target annual income (NZD, today&apos;s dollars)
+                </Label>
+                <Input
+                  id="targetAnnualIncome"
+                  type="text"
+                  inputMode="decimal"
+                  value={form.targetAnnualIncome}
+                  onChange={(e) => handleFieldChange("targetAnnualIncome", e.target.value)}
+                  className="border-slate-300 focus:border-blue-500 focus:ring-blue-500"
+                />
+                <FieldError message={fieldErrors.targetAnnualIncome} />
+                <p className="text-xs text-slate-500">
+                  80,000 is a starting placeholder, not a recommendation.
+                </p>
+              </div>
             </div>
 
             {!projection.ok && (
@@ -471,6 +503,52 @@ const InvestmentProjectionCalculator = () => {
                 </CardContent>
               </Card>
             )}
+
+            {/* Dividend Income Crossover — PRD headline: "when can I live off my dividends?"
+                (features/crossover-target-income/spec.md AC17). Only string formatting/field reads
+                here; every number comes from findIncomeCrossover via runProjection. */}
+            {projection.ok && (
+              <Card className="bg-gradient-to-b from-emerald-50 to-white border-emerald-100 shadow-inner mt-6">
+                <CardContent className="p-6 text-center space-y-2">
+                  <p className="text-sm text-slate-600 font-medium">Dividend Income Crossover</p>
+                  {!form.showRealTerms ? (
+                    <p className="text-slate-600">
+                      Turn on today&apos;s dollars to see the crossover year.
+                    </p>
+                  ) : !projection.crossover ? (
+                    <p className="text-slate-600">
+                      Enter a target annual income to see when it would be reached.
+                    </p>
+                  ) : (
+                    <>
+                      <p className="text-3xl font-bold text-emerald-700">
+                        {formatCrossoverHeadline(projection.crossover)}
+                      </p>
+                      <p className="text-sm text-slate-600">
+                        {formatNzd(
+                          projection.crossover.incomeAtCrossoverNzd ??
+                            projection.crossover.finalYearNetIncomeNzd
+                        )}{" "}
+                        net dividend income
+                      </p>
+                      {projection.crossover.firstYearAboveTarget !== null &&
+                        projection.crossover.crossoverYear !== null &&
+                        projection.crossover.firstYearAboveTarget !==
+                          projection.crossover.crossoverYear && (
+                          <p className="text-xs text-slate-500">
+                            First reached in year {projection.crossover.firstYearAboveTarget}, but
+                            not sustained until year {projection.crossover.crossoverYear}.
+                          </p>
+                        )}
+                      <p className="text-xs text-slate-500">
+                        Accumulate/Coast income is reinvested, not paid out — this is the year the
+                        income would cover the target if you switched to drawing then.
+                      </p>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </CardContent>
         </Card>
 
@@ -508,6 +586,11 @@ const InvestmentProjectionCalculator = () => {
                       {showReal && realResult && (
                         <th className="text-left p-3 font-semibold text-slate-500">
                           Purchasing power lost
+                        </th>
+                      )}
+                      {projection.ok && projection.crossover && (
+                        <th className="text-left p-3 font-semibold text-emerald-700">
+                          Net dividend income
                         </th>
                       )}
                     </tr>
@@ -551,6 +634,11 @@ const InvestmentProjectionCalculator = () => {
                         {showReal && realResult && (
                           <td className="p-3 text-slate-500 text-sm">
                             {formatNzd(realResult.rows[index].purchasingPowerLostNzd)}
+                          </td>
+                        )}
+                        {projection.ok && projection.crossover && (
+                          <td className="p-3 text-emerald-600 font-medium">
+                            {formatNzd(projection.crossover.netIncomeByYearNzd[index])}
                           </td>
                         )}
                       </tr>

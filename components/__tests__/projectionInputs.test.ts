@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseNumericField,
   parseInflationRate,
+  parseTargetIncome,
   buildProjectionInput,
   seedAssumptionsFromFund,
   runProjection,
@@ -36,6 +37,10 @@ function makeForm(overrides: Partial<ProjectionFormState> = {}): ProjectionFormS
     drawdownStartYear: "",
     showRealTerms: true,
     inflationRatePercent: "3",
+    // features/crossover-target-income/spec.md AC17: "80000" matches the UI's own default (a
+    // stated placeholder, not a recommendation) — disclosed here per Coder Guardrails, same
+    // pattern as showRealTerms/inflationRatePercent above.
+    targetAnnualIncome: "80000",
     ...overrides,
   };
 }
@@ -428,5 +433,104 @@ describe("inflation-real-terms mapper", () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toMatch(/^ProjectionInputError: /);
     expect(result.errors[0]).toContain("inflationRate");
+  });
+});
+
+// features/crossover-target-income/spec.md ACs 13-16. Every deflator/income calculation lives in
+// lib/projection.ts's findIncomeCrossover — this module only ever parses the raw target string and
+// decides whether to call it (Constitution §2, Coder Guardrails "no income or deflator arithmetic
+// in ... projectionInputs.ts").
+describe("crossover-target-income mapper", () => {
+  describe("AC13 — parseTargetIncome(form)", () => {
+    it('"" -> {ok:true, value: undefined} (blank must not hide the whole table)', () => {
+      const result = parseTargetIncome(makeForm({ targetAnnualIncome: "" }));
+      expect(result).toEqual({ ok: true, value: undefined });
+    });
+
+    it('"   " -> {ok:true, value: undefined}', () => {
+      const result = parseTargetIncome(makeForm({ targetAnnualIncome: "   " }));
+      expect(result).toEqual({ ok: true, value: undefined });
+    });
+
+    it('"0" -> 0, a legitimate target distinct from blank (invariant 14)', () => {
+      const result = parseTargetIncome(makeForm({ targetAnnualIncome: "0" }));
+      expect(result).toEqual({ ok: true, value: 0 });
+    });
+
+    it('"80000" -> 80000', () => {
+      const result = parseTargetIncome(makeForm({ targetAnnualIncome: "80000" }));
+      expect(result).toEqual({ ok: true, value: 80000 });
+    });
+
+    it('"abc" -> a field error naming Target annual income', () => {
+      const result = parseTargetIncome(makeForm({ targetAnnualIncome: "abc" }));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toContain("Target annual income");
+    });
+
+    it('"-1" -> a field error naming Target annual income', () => {
+      const result = parseTargetIncome(makeForm({ targetAnnualIncome: "-1" }));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toContain("Target annual income");
+    });
+  });
+
+  describe("AC14 — buildProjectionInput", () => {
+    it('targetAnnualIncome "abc" -> ok:false naming targetAnnualIncome', () => {
+      const result = buildProjectionInput(makeForm({ targetAnnualIncome: "abc" }));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.targetAnnualIncome).toBeTruthy();
+    });
+
+    it("blank -> ok:true", () => {
+      const result = buildProjectionInput(makeForm({ targetAnnualIncome: "" }));
+      expect(result.ok).toBe(true);
+    });
+
+    it('on success, "targetAnnualIncomeNzd" is never a key of the built ProjectionInput (same reasoning as inflationRate)', () => {
+      const result = buildProjectionInput(makeForm({ targetAnnualIncome: "80000" }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect("targetAnnualIncomeNzd" in result.value).toBe(false);
+    });
+  });
+
+  describe("AC15 — runProjection wiring", () => {
+    it("toggle on, target '3800' -> crossover defined and consistent with real", () => {
+      const result = runProjection(makeForm({ showRealTerms: true, targetAnnualIncome: "3800" }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.crossover).toBeDefined();
+      if (!result.crossover || !result.real) return;
+      expect(result.crossover.inflationRate).toBe(result.real.inflationRate);
+      expect(result.crossover.netIncomeByYearNzd.length).toBe(result.value.rows.length);
+    });
+
+    it("toggle off -> crossover undefined (C3, a nominal answer to a real question is wrong)", () => {
+      const result = runProjection(makeForm({ showRealTerms: false, targetAnnualIncome: "3800" }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.crossover).toBeUndefined();
+    });
+
+    it("toggle on, target blank -> crossover undefined, real still defined, ok:true", () => {
+      const result = runProjection(makeForm({ showRealTerms: true, targetAnnualIncome: "" }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.crossover).toBeUndefined();
+      expect(result.real).toBeDefined();
+    });
+  });
+
+  it("AC16 — one projection: a target changes no projection output, no second project() call", () => {
+    const withTarget = runProjection(makeForm({ showRealTerms: true, targetAnnualIncome: "3800" }));
+    const withoutTarget = runProjection(makeForm({ showRealTerms: true, targetAnnualIncome: "" }));
+    expect(withTarget.ok).toBe(true);
+    expect(withoutTarget.ok).toBe(true);
+    if (!withTarget.ok || !withoutTarget.ok) return;
+    expect(withTarget.value).toEqual(withoutTarget.value);
   });
 });

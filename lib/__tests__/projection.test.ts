@@ -3,10 +3,12 @@ import {
   project,
   projectFund,
   toRealTerms,
+  findIncomeCrossover,
   ProjectionInputError,
   type ProjectionInput,
   type ProjectionResult,
   type ProjectionRow,
+  type IncomeCrossover,
 } from "@/lib/projection";
 import { getFund, MissingAssumptionError } from "@/lib/funds";
 import { TaxInputError } from "@/lib/nzTax";
@@ -1269,5 +1271,250 @@ describe("three-phase-projection", () => {
       const single = project(makeInput({ termYears: 1 }));
       assertAllFinite(toRealTerms(single, 0.03));
     });
+  });
+});
+
+// features/crossover-target-income/spec.md ACs 1-12. Fixtures T and U follow the spec's naming
+// verbatim. `findIncomeCrossover` reads an already-deflated `RealProjectionResult` (spec C3) — it
+// contains no `(1+i)` arithmetic itself, so every fixture below goes through `toRealTerms` first,
+// exactly as a real caller would.
+describe("crossover-target-income", () => {
+  function makeFixtureT(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeInput({
+      initialShares: 10_000,
+      initialSharePriceNzd: 10,
+      sharePriceGrowth: 0.1,
+      initialDividendPerShareNzd: 0.5,
+      dividendGrowth: 0.1,
+      termYears: 5,
+      usWithholdingRate: 0.15,
+      wrapper: "direct",
+      marginalRate: 0.33,
+      ...overrides,
+    });
+  }
+
+  function makeFixtureU(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeInput({
+      initialShares: 4_800,
+      initialSharePriceNzd: 10,
+      sharePriceGrowth: 0.1,
+      initialDividendPerShareNzd: 0.35,
+      dividendGrowth: 0.1,
+      termYears: 4,
+      usWithholdingRate: 0.15,
+      wrapper: "direct",
+      marginalRate: 0.33,
+      ...overrides,
+    });
+  }
+
+  // AC12 helper: same runtime-enumerated finiteness pattern as assertAllFinite above, applied to
+  // IncomeCrossover — `null` fields (crossoverYear etc.) are `typeof "object"`, not "number", so
+  // they are skipped here exactly like assertAllFinite skips non-number fields, never mistaken
+  // for a missing check (invariant 13).
+  function assertCrossoverAllFinite(crossover: IncomeCrossover): void {
+    for (const [key, value] of Object.entries(crossover)) {
+      if (typeof value === "number") {
+        expect(Number.isFinite(value), `crossover.${key}`).toBe(true);
+      }
+    }
+    crossover.netIncomeByYearNzd.forEach((v, i) => {
+      expect(Number.isFinite(v), `netIncomeByYearNzd[${i}]`).toBe(true);
+    });
+  }
+
+  // AC1: the additive guarantee — project()/toRealTerms() must be byte-identical to before this
+  // slice touched the file. This test invokes no new code at all (it never calls
+  // findIncomeCrossover); it is a regression pin, not a feature test, so it is expected to be
+  // already green even before findIncomeCrossover exists (see notes.md "AC1 does not RED").
+  it("AC1 — additive guarantee: project(T)/toRealTerms(T) are unaffected", () => {
+    const result = project(makeFixtureT());
+    const y1 = result.rows[1];
+    expect(y1.grossDividendsNzd).toBeCloseTo(5_500, 6);
+    expect(y1.usWithholdingNzd).toBeCloseTo(825, 6);
+    expect(y1.nzTaxPayableNzd).toBeCloseTo(825, 6);
+    expect(y1.taxMethod).toBe("fdr");
+    expect(y1.closingValueAfterTaxNzd).toBeCloseTo(113_850, 6);
+    expect(toRealTerms(result, 0.1).rows[1].grossDividendsNzd).toBeCloseTo(5_000, 6);
+  });
+
+  // AC2: net = gross - WHT - NZ tax payable, identically gross - totalTaxNzd (Fixture U, i = 0).
+  it("AC2 — net = gross - WHT - NZ tax payable (Fixture U, i = 0)", () => {
+    const real = toRealTerms(project(makeFixtureU()), 0);
+    const crossover = findIncomeCrossover(real, 0);
+    const expected = [0, 1238.16, 1188.83952, 1333.87794144, 1496.61105029568];
+    expected.forEach((v, i) => expect(crossover.netIncomeByYearNzd[i]).toBeCloseTo(v, 6));
+    real.rows.forEach((row, i) => {
+      expect(crossover.netIncomeByYearNzd[i]).toBeCloseTo(row.grossDividendsNzd - row.totalTaxNzd, 6);
+    });
+    const y1 = real.rows[1];
+    expect(y1.grossDividendsNzd).toBeCloseTo(1_848, 6);
+    expect(y1.grossDividendsNzd - y1.usWithholdingNzd).toBeCloseTo(1_570.8, 6);
+    expect(y1.grossDividendsNzd - y1.nzTaxPayableNzd).toBeCloseTo(1_515.36, 6);
+    expect(y1.dividendsDrawnNzd).toBe(0);
+  });
+
+  // AC3: fees are excluded — the fund/platform nets them from assets, never from dividend cash.
+  it("AC3 — fees are not subtracted (Fixture U + platformFeeAnnualRate 0.01, i = 0)", () => {
+    const real = toRealTerms(project(makeFixtureU({ platformFeeAnnualRate: 0.01 })), 0);
+    const crossover = findIncomeCrossover(real, 0);
+    expect(crossover.netIncomeByYearNzd[1]).toBeCloseTo(1_238.16, 6);
+    expect(crossover.netIncomeByYearNzd[1]).not.toBeCloseTo(694.452, 3);
+    expect(crossover.netIncomeByYearNzd[2]).toBeCloseTo(1_176.877944, 6);
+  });
+
+  // AC4: real, deflated to year 0 (Fixture T). BLOCKER — spec.md's stated i=0 array for years 3-5
+  // ([..., 4990.1284125, 5681.26119763125, 6468.115873503178]) disagrees with both (a) the actual,
+  // unmodified toRealTerms(project(T), 0) output and (b) the spec's own closed form for the same
+  // fixture ("net(t) = 0.0385 x openingValue(t), openingValue(t) = 100_000 x 1.1385^(t-1)"), which
+  // computes to the values used below. i=0 is the identity (AC1 of inflation-real-terms), so the
+  // year-1/2 entries (3850, 4383.225) already agree exactly and pin the shared part of the
+  // disagreement precisely at year 3 onward. See notes.md "Blocker: AC4 fixture arithmetic" for the
+  // full derivation. Per Coder Guardrails, the fixture is not bent to fit the implementation —
+  // these are the engine's real, verified numbers, not invented ones.
+  it("AC4 — real, deflated to year 0 (Fixture T)", () => {
+    const nominal = project(makeFixtureT());
+    const real0 = toRealTerms(nominal, 0);
+    const crossover0 = findIncomeCrossover(real0, 0);
+    const expected0 = [0, 3850, 4383.225, 4990.3016625, 5681.45844275625, 6468.34043707799];
+    expected0.forEach((v, i) => expect(crossover0.netIncomeByYearNzd[i]).toBeCloseTo(v, 6));
+
+    const real10 = toRealTerms(nominal, 0.1);
+    const crossover10 = findIncomeCrossover(real10, 0);
+    const expected10 = [0, 3500, 3622.5, 3749.2875, 3880.5125625, 4016.3305021875];
+    expected10.forEach((v, i) => expect(crossover10.netIncomeByYearNzd[i]).toBeCloseTo(v, 6));
+    expect(crossover10.inflationRate).toBe(0.1);
+  });
+
+  // AC5: the target is real — comparing it against the nominal view (i = 0) gives a wrong-number
+  // answer 3 years too optimistic in this 5-year fixture (Fixture T).
+  it("AC5 — real target vs nominal comparison (Fixture T, target 3,800 / 5,000)", () => {
+    const nominal = project(makeFixtureT());
+    const real10 = toRealTerms(nominal, 0.1);
+    const real0 = toRealTerms(nominal, 0);
+
+    const c10_3800 = findIncomeCrossover(real10, 3_800);
+    expect(c10_3800.crossoverYear).toBe(4);
+    expect(c10_3800.incomeAtCrossoverNzd).toBeCloseTo(3_880.5125625, 6);
+
+    const c0_3800 = findIncomeCrossover(real0, 3_800);
+    expect(c0_3800.crossoverYear).toBe(1);
+
+    const c10_5000 = findIncomeCrossover(real10, 5_000);
+    expect(c10_5000.crossoverYear).toBeNull();
+
+    const c0_5000 = findIncomeCrossover(real0, 5_000);
+    expect(c0_5000.crossoverYear).toBe(4);
+  });
+
+  // AC6: boundary / off-by-one — `>=` at the exact target, `>` or an index shift would miscount.
+  it("AC6 — boundary / off-by-one (Fixture T, i = 0.10)", () => {
+    const real10 = toRealTerms(project(makeFixtureT()), 0.1);
+    const exact = findIncomeCrossover(real10, 3_749.2875);
+    expect(exact.crossoverYear).toBe(3);
+    expect(exact.incomeAtCrossoverNzd).toBeCloseTo(3_749.2875, 6);
+
+    const justAbove = findIncomeCrossover(real10, 3_749.2876);
+    expect(justAbove.crossoverYear).toBe(4);
+  });
+
+  // AC6b: extra hardening beyond AC6's literal fixture value — the spec's "3,749.2875" is not
+  // bit-identical to the engine's own float64 result for that row (it carries ~1e-13 of drift), so
+  // AC6 alone does not reliably distinguish `>=` from `>` at the boundary (surfaced during mutation
+  // testing, see notes.md). Reading the target straight from the row's own computed net income
+  // guarantees an exact match, genuinely pinning `>=`.
+  it("AC6b — >= not > at the bit-exact boundary (mutation hardening)", () => {
+    const real10 = toRealTerms(project(makeFixtureT()), 0.1);
+    const y3Net = real10.rows[3].grossDividendsNzd - real10.rows[3].totalTaxNzd;
+    const exact = findIncomeCrossover(real10, y3Net);
+    expect(exact.crossoverYear).toBe(3);
+  });
+
+  // AC7: year 0 is the pre-growth snapshot and never crosses.
+  it("AC7 — year 0 never crosses (Fixture T, i = 0.10, target 0)", () => {
+    const real10 = toRealTerms(project(makeFixtureT()), 0.1);
+    const crossover = findIncomeCrossover(real10, 0);
+    expect(crossover.crossoverYear).toBe(1);
+    expect(crossover.firstYearAboveTarget).toBe(1);
+    expect(crossover.netIncomeByYearNzd[0]).toBe(0);
+    expect(crossover.netIncomeByYearNzd.length).toBe(real10.rows.length);
+    expect(crossover.netIncomeByYearNzd.length).toBe(6);
+  });
+
+  // AC8 (C4): every phase is scanned — the default all-Accumulate run still reports a crossover
+  // ("if you switched to drawing then"), and Drawing does not change the phase-independent tax.
+  it("AC8 — phase-independent (C4) (Fixture T, i = 0.10, target 3,800)", () => {
+    const real10 = toRealTerms(project(makeFixtureT()), 0.1);
+    real10.rows.forEach((row) => {
+      expect(row.phase).toBe("accumulate");
+      expect(row.dividendsDrawnNzd).toBe(0);
+    });
+    const crossover = findIncomeCrossover(real10, 3_800);
+    expect(crossover.crossoverYear).toBe(4);
+
+    // The nominal (pre-deflation) dividendsDrawnNzd pins that this is a genuine Draw year — the
+    // real (deflated) crossover reading below is what an investor actually compares against the
+    // real target, exactly as AC5 established.
+    const decumulateNominal = project(makeFixtureT({ contributionsStopYear: 0 }));
+    expect(decumulateNominal.rows[1].dividendsDrawnNzd).toBeCloseTo(4_675, 6);
+    const decumulate = toRealTerms(decumulateNominal, 0.1);
+    const decumulateCrossover = findIncomeCrossover(decumulate, 3_800);
+    expect(decumulateCrossover.netIncomeByYearNzd[1]).toBeCloseTo(3_500, 6);
+  });
+
+  // AC9 (C5): never crossed reports null, never 0/-1/the last year, and finalYearNetIncomeNzd is
+  // still populated so the UI can say something honest.
+  it("AC9 — never crossed (C5) (Fixture T, i = 0.10, target 5,000)", () => {
+    const real10 = toRealTerms(project(makeFixtureT()), 0.1);
+    const crossover = findIncomeCrossover(real10, 5_000);
+    expect(crossover.crossoverYear).toBeNull();
+    expect(crossover.firstYearAboveTarget).toBeNull();
+    expect(crossover.incomeAtCrossoverNzd).toBeNull();
+    expect(crossover.finalYearNetIncomeNzd).toBeCloseTo(4_016.3305021875, 6);
+  });
+
+  // AC10 (C5): sustained beats first — the de minimis crossing (dividend -> fif) dips year 2's
+  // income below the target even though year 1 cleared it.
+  it("AC10 — sustained vs first (C5) (Fixture U, i = 0, target 1,200)", () => {
+    const real0 = toRealTerms(project(makeFixtureU()), 0);
+    expect(real0.rows[1].taxRegime).toBe("dividend");
+    expect(real0.rows[2].taxRegime).toBe("fif");
+    const crossover = findIncomeCrossover(real0, 1_200);
+    expect(crossover.firstYearAboveTarget).toBe(1);
+    expect(crossover.crossoverYear).toBe(3);
+    expect(crossover.incomeAtCrossoverNzd).toBeCloseTo(1_333.87794144, 6);
+    expect(crossover.finalYearNetIncomeNzd).toBeCloseTo(1_496.61105029568, 6);
+  });
+
+  // AC11: the target is validated like every other money/rate input — nothing is coerced.
+  it("AC11 — target validated, nothing coerced", () => {
+    const real10 = toRealTerms(project(makeFixtureT()), 0.1);
+    for (const bad of [NaN, Infinity, -Infinity, -1]) {
+      let thrown: unknown;
+      try {
+        findIncomeCrossover(real10, bad);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown, `target=${bad}`).toBeInstanceOf(ProjectionInputError);
+      expect((thrown as Error).message, `target=${bad}`).toMatch(/targetAnnualIncomeNzd/);
+    }
+    expect(() => findIncomeCrossover(real10, 0)).not.toThrow();
+    expect(() => findIncomeCrossover(real10, 1e9)).not.toThrow();
+  });
+
+  // AC12: no NaN/Infinity escapes findIncomeCrossover, across every rate/fixture combination named
+  // in the spec (invariant 13).
+  it("AC12 — no NaN/Infinity", () => {
+    const t = project(makeFixtureT());
+    for (const rate of [0, 0.03, 0.1]) {
+      assertCrossoverAllFinite(findIncomeCrossover(toRealTerms(t, rate), 3_800));
+    }
+    const u = project(makeFixtureU());
+    assertCrossoverAllFinite(findIncomeCrossover(toRealTerms(u, 0), 1_200));
+
+    const single = project(makeInput({ termYears: 1 }));
+    assertCrossoverAllFinite(findIncomeCrossover(toRealTerms(single, 0.03), 0));
   });
 });
