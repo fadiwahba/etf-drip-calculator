@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   project,
   projectFund,
+  toRealTerms,
   ProjectionInputError,
   type ProjectionInput,
   type ProjectionResult,
@@ -1031,10 +1032,242 @@ describe("three-phase-projection", () => {
   // 3PP-AC9: no NaN/Infinity escapes the new fields, reusing the file's existing runtime-enumerated
   // finiteness check (covers dividendsDrawnNzd/totalDividendsDrawnNzd automatically).
   it("3PP-AC9 — no NaN/Infinity escapes the new paths", () => {
-    assertAllFinite(project(makeFixtureP({ contributionsStopYear: 2 })));
+    // F2 (review.md, features/inflation-real-terms/spec.md AC15): the original first fixture ran
+    // the exact same Draw scenario as the line below and never finiteness-checked Coast at all —
+    // replaced with a genuine Coast fixture, pinned by `rows[2].phase` so it cannot silently drift
+    // back to Draw/Accumulate and go uncovered again.
+    const coastResult = project(makeFixtureP({ contributionsStopYear: 2, drawdownStartYear: 4 }));
+    expect(coastResult.rows[2].phase).toBe("coast");
+    assertAllFinite(coastResult);
     assertAllFinite(project(makeFixtureP({ contributionsStopYear: 2, drawdownStartYear: 2 })));
     assertAllFinite(project(makeFixtureQ({ contributionsStopYear: 1, drawdownStartYear: 1 })));
     assertAllFinite(project(makeFixtureR({ contributionsStopYear: 0 })));
     assertAllFinite(project(makeInput({ termYears: 1, contributionsStopYear: 0 })));
+  });
+
+  // features/inflation-real-terms/spec.md ACs 1-8, 14, 16. Real vs nominal is a VIEW over an
+  // existing project() result (spec R1) — every fixture here reuses this file's
+  // makeFixtureP/makeFixtureR rather than adding a fourth tax/fee model (Constitution §2). Nested
+  // inside "three-phase-projection" so these fixtures (function-scoped to that describe callback)
+  // are in scope, rather than duplicating them at module level.
+  describe("inflation-real-terms", () => {
+    // AC1: i = 0 is the identity. A `(1+i)^t` deflator of 1 must leave every field byte-identical
+    // to the nominal path — this does not exercise the exponent itself (AC2/AC3 do that), but it
+    // does catch a deflator applied to a field the spec says must never move (e.g. costBasisNzd).
+    it("AC1 — i = 0 is the identity", () => {
+      const nominal = project(makeFixtureP());
+      const real = toRealTerms(nominal, 0);
+
+      expect(real.inflationRate).toBe(0);
+      expect(real.rows.length).toBe(nominal.rows.length);
+      for (let i = 0; i < real.rows.length; i++) {
+        const { purchasingPowerLostNzd, ...rest } = real.rows[i];
+        void purchasingPowerLostNzd;
+        expect(rest).toEqual(nominal.rows[i]);
+        expect(real.rows[i].purchasingPowerLostNzd).toBe(0);
+      }
+      expect(real.initialInvestmentNzd).toEqual(nominal.initialInvestmentNzd);
+      expect(real.totalContributionsNzd).toEqual(nominal.totalContributionsNzd);
+      expect(real.finalValueNzd).toEqual(nominal.finalValueNzd);
+      expect(real.totalFeesNzd).toEqual(nominal.totalFeesNzd);
+      expect(real.totalTaxNzd).toEqual(nominal.totalTaxNzd);
+      expect(real.netGainNzd).toEqual(nominal.netGainNzd);
+      expect(real.totalDividendsDrawnNzd).toEqual(nominal.totalDividendsDrawnNzd);
+    });
+
+    // AC2: the deflator and its two exponents (t for closing/flow fields, t-1 for opening fields,
+    // year 0 pinned to exponent 0 either way) — P at i = 0.10 for round numbers.
+    it("AC2 — deflator and exponents, P at i = 0.10", () => {
+      const nominal = project(makeFixtureP());
+      const real = toRealTerms(nominal, 0.1);
+
+      const { purchasingPowerLostNzd: y0Memo, ...y0Rest } = real.rows[0];
+      void y0Memo;
+      expect(y0Rest).toEqual(nominal.rows[0]);
+      expect(real.rows[0].purchasingPowerLostNzd).toBe(0);
+
+      const y1 = real.rows[1];
+      expect(y1.openingValueNzd).toBeCloseTo(10_000, 6);
+      expect(y1.openingSharePriceNzd).toBeCloseTo(10, 6);
+      expect(y1.closingSharePriceNzd).toBeCloseTo(10, 6);
+      expect(y1.contributionsGrossNzd).toBeCloseTo(1_000, 6);
+      expect(y1.dividendPerShareNzd).toBeCloseTo(0.5, 6);
+      expect(y1.grossDividendsNzd).toBeCloseTo(555, 6);
+      expect(y1.closingValueNzd).toBeCloseTo(11_655, 6);
+      expect(y1.purchasesNzd).toBeCloseTo(1_555, 6);
+      expect(y1.taxableIncomeNzd).toBeCloseTo(555, 6);
+      expect(y1.nzTaxPayableNzd).toBeCloseTo(183.15, 6);
+      expect(y1.closingValueAfterTaxNzd).toBeCloseTo(11_471.85, 6);
+      expect(y1.cumulativeContributionsNzd).toBeCloseTo(1_000, 6);
+
+      const y2 = real.rows[2];
+      // Chain check: y2's real openingValueNzd must equal y1's real closingValueAfterTaxNzd —
+      // a `(1+i)^t` mistake on the opening fields would give 10,428.13 here instead.
+      expect(y2.openingValueNzd).toBeCloseTo(11_471.85, 6);
+      expect(y2.openingSharePriceNzd).toBeCloseTo(10, 6);
+      expect(y2.closingSharePriceNzd).toBeCloseTo(10, 6);
+      expect(y2.contributionsGrossNzd).toBeCloseTo(909.090909, 6);
+      expect(y2.grossDividendsNzd).toBeCloseTo(566.902273, 6);
+      expect(y2.closingValueNzd).toBeCloseTo(13_038.752273, 6);
+      expect(y2.nzTaxPayableNzd).toBeCloseTo(187.07775, 6);
+      expect(y2.closingValueAfterTaxNzd).toBeCloseTo(12_851.674523, 6);
+      expect(y2.cumulativeContributionsNzd).toBeCloseTo(1_909.090909, 6);
+    });
+
+    // AC3: the deflator is the inflation rate, never sharePriceGrowth — P has g = 0.10, so AC2's
+    // i = 0.10 cannot tell a `sharePriceGrowth` mix-up apart from a correct `inflationRate` use.
+    // i = 0.03 (g != i) is what kills that mutation.
+    it("AC3 — the deflator uses the inflation rate, not the growth rate (i = 0.03)", () => {
+      const nominal = project(makeFixtureP());
+      const real = toRealTerms(nominal, 0.03);
+
+      const y1 = real.rows[1];
+      expect(y1.closingValueAfterTaxNzd).toBeCloseTo(12_251.490291, 6);
+      expect(y1.purchasingPowerLostNzd).toBeCloseTo(367.544709, 6);
+
+      const y2 = real.rows[2];
+      expect(y2.closingValueAfterTaxNzd).toBeCloseTo(14_657.862355, 6);
+      expect(y2.purchasingPowerLostNzd).toBeCloseTo(892.663817, 6);
+    });
+
+    // AC4: non-money fields (counts, a statutory base, and enum-ish fields) pass straight through,
+    // Object.is against the nominal row — not merely close, byte-identical.
+    it("AC4 — non-money fields pass through untouched", () => {
+      const nominal = project(makeFixtureP());
+      const real = toRealTerms(nominal, 0.1);
+
+      for (let i = 0; i < real.rows.length; i++) {
+        const n = nominal.rows[i];
+        const r = real.rows[i];
+        expect(Object.is(r.openingShares, n.openingShares)).toBe(true);
+        expect(Object.is(r.closingShares, n.closingShares)).toBe(true);
+        expect(Object.is(r.costBasisNzd, n.costBasisNzd)).toBe(true);
+        expect(Object.is(r.year, n.year)).toBe(true);
+        expect(Object.is(r.phase, n.phase)).toBe(true);
+        expect(Object.is(r.taxRegime, n.taxRegime)).toBe(true);
+        expect(Object.is(r.taxMethod, n.taxMethod)).toBe(true);
+        expect(Object.is(r.aboveThreshold, n.aboveThreshold)).toBe(true);
+      }
+      expect(real.rows[1].closingShares).toBeCloseTo(1_147.185, 6);
+      expect(real.rows[2].closingShares).toBeCloseTo(1_285.1674522727273, 6);
+      expect(real.rows[1].costBasisNzd).toBeCloseTo(11_710.5, 6);
+      expect(real.rows[2].costBasisNzd).toBeCloseTo(13_496.45175, 6);
+    });
+
+    // AC5: the memo is a read-only difference, never subtracted from a balance or summed into a
+    // fee/tax total, and there is no `totalPurchasingPowerLostNzd` (summing balances across years
+    // would double-count).
+    it("AC5 — purchasing power lost is a memo, not an outflow", () => {
+      const nominal = project(makeFixtureP());
+      const real = toRealTerms(nominal, 0.1);
+
+      for (let i = 0; i < real.rows.length; i++) {
+        const expectedMemo =
+          nominal.rows[i].closingValueAfterTaxNzd - real.rows[i].closingValueAfterTaxNzd;
+        expect(real.rows[i].purchasingPowerLostNzd).toBeCloseTo(expectedMemo, 6);
+      }
+      expect(real.rows[0].purchasingPowerLostNzd).toBe(0);
+      expect(real.rows[1].purchasingPowerLostNzd).toBeCloseTo(1_147.185, 6);
+      expect(real.rows[2].purchasingPowerLostNzd).toBeCloseTo(2_698.85165, 6);
+      expect(real.totalFeesNzd).toBe(0);
+      expect(real.totalTaxNzd).toBeCloseTo(370.22775, 6);
+      expect(real.rows[2].closingValueAfterTaxNzd).toBeCloseTo(12_851.674523, 6);
+      expect("totalPurchasingPowerLostNzd" in real).toBe(false);
+    });
+
+    // AC6: real summary totals are PV sums of the deflated rows, never one deflator applied to the
+    // nominal total — the "not" assertions pin the specific wrong-but-plausible numbers a single
+    // end-deflator would produce.
+    it("AC6 — real totals are PV sums, not one deflated total", () => {
+      const real = toRealTerms(project(makeFixtureP()), 0.1);
+
+      expect(real.initialInvestmentNzd).toBe(10_000);
+      expect(real.finalValueNzd).toBeCloseTo(12_851.674523, 6);
+      expect(real.totalContributionsNzd).toBeCloseTo(1_909.090909, 6);
+      expect(real.totalContributionsNzd).not.toBeCloseTo(1_818.181818, 3);
+      expect(real.totalTaxNzd).toBeCloseTo(370.22775, 6);
+      expect(real.totalTaxNzd).not.toBeCloseTo(353.57775, 3);
+      expect(real.totalFeesNzd).toBe(0);
+      expect(real.totalDividendsDrawnNzd).toBe(0);
+      expect(real.netGainNzd).toBeCloseTo(942.583614, 6);
+      expect(real.inflationRate).toBe(0.1);
+    });
+
+    // AC7: contributions are a fixed nominal dollar amount — the engine invests exactly that every
+    // year, and the real view only shows it shrinking, never a different (indexed) figure.
+    it("AC7 — contributions are nominal; the real view shows them shrinking", () => {
+      const nominal = project(makeFixtureP());
+      const real = toRealTerms(nominal, 0.1);
+
+      expect(nominal.rows[1].contributionsGrossNzd).toBeCloseTo(1_100, 6);
+      expect(nominal.rows[2].contributionsGrossNzd).toBeCloseTo(1_100, 6);
+      expect(real.rows[1].contributionsGrossNzd).toBeCloseTo(1_000, 6);
+      expect(real.rows[2].contributionsGrossNzd).toBeCloseTo(909.090909, 6);
+    });
+
+    // AC8: the rate is validated, nothing is clamped (invariant 14) — deflation (negative i) reads
+    // as a gain in a column labelled "lost" (Constitution §1), so it is rejected, not floored to 0.
+    it("AC8 — the rate is validated, nothing is clamped", () => {
+      const nominal = project(makeFixtureP());
+      for (const bad of [NaN, Infinity, -Infinity, -0.01, 1, 3]) {
+        let thrown: unknown;
+        try {
+          toRealTerms(nominal, bad);
+        } catch (e) {
+          thrown = e;
+        }
+        expect(thrown, `inflationRate=${bad}`).toBeInstanceOf(ProjectionInputError);
+        expect((thrown as Error).message, `inflationRate=${bad}`).toMatch(/inflationRate/);
+      }
+      expect(() => toRealTerms(nominal, 0)).not.toThrow();
+      expect(() => toRealTerms(nominal, 0.999)).not.toThrow();
+    });
+
+    // AC14 — F1 (review.md, test-only): the fee drag is charged in every phase. Every existing
+    // phase fixture before this had zero fees, so nothing pinned this. Fixture R with
+    // platformFeeAnnualRate 0.01, run as Draw and Coast.
+    it("AC14 — F1: the fee drag is charged in every phase (Fixture R, platformFeeAnnualRate 0.01)", () => {
+      const draw = project(makeFixtureR({ contributionsStopYear: 0, platformFeeAnnualRate: 0.01 }));
+      const coast = project(
+        makeFixtureR({ contributionsStopYear: 0, drawdownStartYear: 4, platformFeeAnnualRate: 0.01 })
+      );
+
+      const drawY1 = draw.rows[1];
+      expect(drawY1.totalFeesNzd).toBeCloseTo(1_100, 6);
+      expect(drawY1.closingValueNzd).toBeCloseTo(108_900, 6);
+      expect(drawY1.dividendsDrawnNzd).toBeCloseTo(4_675, 6);
+      expect(drawY1.taxMethod).toBe("fdr");
+      expect(drawY1.taxableIncomeNzd).toBeCloseTo(5_000, 6);
+      expect(drawY1.nzTaxPayableNzd).toBeCloseTo(825, 6);
+      expect(drawY1.closingShares).toBeCloseTo(9_825, 6);
+      expect(drawY1.closingValueAfterTaxNzd).toBeCloseTo(108_075, 6);
+
+      const coastY1 = coast.rows[1];
+      expect(coastY1.totalFeesNzd).toBeCloseTo(1_146.75, 6);
+      expect(coastY1.dividendsReinvestedNzd).toBeCloseTo(4_675, 6);
+      expect(coastY1.closingValueNzd).toBeCloseTo(113_528.25, 6);
+      expect(coastY1.nzTaxPayableNzd).toBeCloseTo(825, 6);
+      expect(coastY1.closingShares).toBeCloseTo(10_245.75, 6);
+      expect(coastY1.closingValueAfterTaxNzd).toBeCloseTo(112_703.25, 6);
+
+      for (const row of [...draw.rows, ...coast.rows]) {
+        if (row.year === 0) continue;
+        expect(row.totalFeesNzd / (row.closingValueNzd + row.totalFeesNzd)).toBeCloseTo(0.01, 12);
+      }
+    });
+
+    // AC16: no NaN/Infinity escapes toRealTerms, reusing the file's existing runtime-enumerated
+    // finiteness check across P at every pinned rate, R with contributionsStopYear 0, and a
+    // 1-year degenerate term.
+    it("AC16 — no NaN/Infinity in the real view", () => {
+      const p = project(makeFixtureP());
+      for (const rate of [0, 0.03, 0.1, 0.999]) {
+        assertAllFinite(toRealTerms(p, rate));
+      }
+      const r = project(makeFixtureR({ contributionsStopYear: 0 }));
+      assertAllFinite(toRealTerms(r, 0.03));
+      const single = project(makeInput({ termYears: 1 }));
+      assertAllFinite(toRealTerms(single, 0.03));
+    });
   });
 });

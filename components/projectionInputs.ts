@@ -6,7 +6,14 @@
 // itself validates (rate ranges, wrapper/pir cross-field rules) is deliberately left unvalidated
 // here so `runProjection` surfaces the engine's own error verbatim instead of duplicating it.
 
-import { project, ProjectionInputError, type ProjectionInput, type ProjectionResult } from "@/lib/projection";
+import {
+  project,
+  toRealTerms,
+  ProjectionInputError,
+  type ProjectionInput,
+  type ProjectionResult,
+  type RealProjectionResult,
+} from "@/lib/projection";
 import { TaxInputError, type Wrapper } from "@/lib/nzTax";
 import { MissingAssumptionError, type Fund } from "@/lib/funds";
 
@@ -75,6 +82,11 @@ export interface ProjectionFormState {
   // place that distinction is made.
   contributionsStopYear: string;
   drawdownStartYear: string;
+  // features/inflation-real-terms/spec.md R6: off means nominal, no memo column, and the rate
+  // field disabled with its value kept but never parsed — parseInflationRate below is the one
+  // place that distinction is made (mirrors the contributionsStopYear/drawdownStartYear pattern).
+  showRealTerms: boolean;
+  inflationRatePercent: string;
 }
 
 export type FieldErrors = Record<string, string>;
@@ -143,6 +155,26 @@ function mustParseOptionalPhaseYear(result: OptionalPhaseYearParseResult): numbe
   return result.value;
 }
 
+type InflationRateParseResult = { ok: true; value: number | undefined } | { ok: false; error: string };
+
+// AC9 (spec.md R6): off means "not parsed" — the field's raw value is kept in form state (so the
+// disabled input still shows what the user typed) but never validated or converted, so an invalid
+// string cannot block a nominal-only run. On, it is a required percent field like any other, /100
+// exactly once — the actual rate-domain check (0 <= i < 1) lives in toRealTerms, not here
+// (Constitution §2), so a percent-shaped value like "150" deliberately passes this parse and is
+// caught by the engine instead (AC12).
+export function parseInflationRate(form: ProjectionFormState): InflationRateParseResult {
+  if (!form.showRealTerms) {
+    return { ok: true, value: undefined };
+  }
+  const parsed = parseNumericField(form.inflationRatePercent, "Inflation rate (%)");
+  if (!parsed.ok) {
+    return { ok: false, error: parsed.error };
+  }
+  // /100: percent field -> decimal, exactly once.
+  return { ok: true, value: parsed.value / 100 };
+}
+
 export function buildProjectionInput(form: ProjectionFormState): BuildProjectionInputResult {
   const initialCapital = parseNumericField(form.initialCapital, "Initial Capital (NZD)", { min: 0 });
   const termYears = parseNumericField(form.termYears, "Investment Term (years)", {
@@ -179,6 +211,7 @@ export function buildProjectionInput(form: ProjectionFormState): BuildProjection
     form.drawdownStartYear,
     "Start drawing dividends from year"
   );
+  const inflationRateResult = parseInflationRate(form);
 
   const errors: FieldErrors = {};
   if (!initialCapital.ok) errors.initialCapital = initialCapital.error;
@@ -195,6 +228,10 @@ export function buildProjectionInput(form: ProjectionFormState): BuildProjection
   if (!pirResult.ok) errors.pirPercent = pirResult.error;
   if (!contributionsStopYear.ok) errors.contributionsStopYear = contributionsStopYear.error;
   if (!drawdownStartYear.ok) errors.drawdownStartYear = drawdownStartYear.error;
+  // inflationRatePercent is validated here (AC10) but deliberately never written into `value`
+  // below — R1: inflation is not a ProjectionInput, so a mapper-level check on the field cannot
+  // let its parsed number leak into the engine's input shape.
+  if (!inflationRateResult.ok) errors.inflationRatePercent = inflationRateResult.error;
 
   if (Object.keys(errors).length > 0) {
     return { ok: false, errors };
@@ -279,7 +316,7 @@ export function seedAssumptionsFromFund(fund: Fund): SeedAssumptionResult {
 }
 
 export type RunProjectionResult =
-  | { ok: true; value: ProjectionResult }
+  | { ok: true; value: ProjectionResult; real: RealProjectionResult | undefined }
   | { ok: false; errors: string[] };
 
 // AC9: the three engine error classes this module imports (ProjectionInputError, TaxInputError,
@@ -297,13 +334,45 @@ export function formatEngineError(error: unknown): string {
   throw error;
 }
 
+// AC11 (spec.md R1): one project() call, then toRealTerms on its result — never a second
+// projection for the real view. AC12: toRealTerms' own ProjectionInputError surfaces through
+// formatEngineError exactly like project()'s does above, not caught and reworded.
 export function runProjection(form: ProjectionFormState): RunProjectionResult {
   const built = buildProjectionInput(form);
   if (!built.ok) {
     return { ok: false, errors: Object.values(built.errors) };
   }
+
+  let value: ProjectionResult;
   try {
-    return { ok: true, value: project(built.value) };
+    value = project(built.value);
+  } catch (error) {
+    return { ok: false, errors: [formatEngineError(error)] };
+  }
+
+  if (!form.showRealTerms) {
+    return { ok: true, value, real: undefined };
+  }
+
+  // buildProjectionInput already returned ok:false above if inflationRatePercent failed to parse,
+  // so this second parse can only hit its ok:true branch here — re-parsing rather than trusting
+  // that keeps this module's only percent->decimal arithmetic inside parseInflationRate itself.
+  const inflationRateResult = parseInflationRate(form);
+  if (!inflationRateResult.ok) {
+    return { ok: false, errors: [inflationRateResult.error] };
+  }
+  const inflationRate = inflationRateResult.value;
+  if (inflationRate === undefined) {
+    // Unreachable: parseInflationRate only returns undefined when showRealTerms is false, and
+    // this branch is guarded by `form.showRealTerms` above.
+    throw new Error(
+      "unreachable: parseInflationRate returned undefined while showRealTerms is true"
+    );
+  }
+
+  try {
+    const real = toRealTerms(value, inflationRate);
+    return { ok: true, value, real };
   } catch (error) {
     return { ok: false, errors: [formatEngineError(error)] };
   }

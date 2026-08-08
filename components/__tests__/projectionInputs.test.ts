@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseNumericField,
+  parseInflationRate,
   buildProjectionInput,
   seedAssumptionsFromFund,
   runProjection,
@@ -13,6 +14,9 @@ import { getFund, MissingAssumptionError } from "@/lib/funds";
 
 // A fully valid form matching the spec's stated defaults (100k / 15y / SCHD seed / direct / 33% /
 // 15% WHT) — every AC2-AC9 test starts from this and overrides only what it needs to isolate.
+// features/inflation-real-terms/spec.md AC10 guardrail: showRealTerms/inflationRatePercent added
+// here (disclosed in notes.md) matching the UI's own defaults (R6 — toggle on, "3") so every
+// pre-existing test below keeps exercising the same real-terms-on path the UI ships with.
 function makeForm(overrides: Partial<ProjectionFormState> = {}): ProjectionFormState {
   return {
     initialCapital: "100000",
@@ -30,6 +34,8 @@ function makeForm(overrides: Partial<ProjectionFormState> = {}): ProjectionFormS
     fxSpreadPercent: "0",
     contributionsStopYear: "",
     drawdownStartYear: "",
+    showRealTerms: true,
+    inflationRatePercent: "3",
     ...overrides,
   };
 }
@@ -317,5 +323,110 @@ describe("three-phase-projection mapper", () => {
     expect(formatPhase("accumulate")).toBe("Accumulate");
     expect(formatPhase("coast")).toBe("Coast");
     expect(formatPhase("draw")).toBe("Draw");
+  });
+});
+
+// features/inflation-real-terms/spec.md ACs 9-12. Every occurrence of "/(1+i)" (the deflator
+// itself) lives in lib/projection.ts's toRealTerms — this module only ever does a single `/100`
+// percent->decimal conversion for the rate, same convention as every other percent field here
+// (Constitution §2, Coder Guardrails).
+describe("inflation-real-terms mapper", () => {
+  // AC9: showRealTerms off means the field is never parsed at all — not even a syntax check —
+  // and the value is kept (spec.md R6 "value kept and not parsed"), so "abc" cannot surface here.
+  describe("AC9 — parseInflationRate(form)", () => {
+    it("showRealTerms: false returns {ok:true, value:undefined} even for an invalid rate string", () => {
+      const result = parseInflationRate(makeForm({ showRealTerms: false, inflationRatePercent: "abc" }));
+      expect(result).toEqual({ ok: true, value: undefined });
+    });
+
+    it('showRealTerms: true, "3" -> 0.03', () => {
+      const result = parseInflationRate(makeForm({ showRealTerms: true, inflationRatePercent: "3" }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value).toBeCloseTo(0.03, 10);
+    });
+
+    it('showRealTerms: true, "0" -> 0, never omitted or coerced from something else', () => {
+      const result = parseInflationRate(makeForm({ showRealTerms: true, inflationRatePercent: "0" }));
+      expect(result).toEqual({ ok: true, value: 0 });
+    });
+
+    it('showRealTerms: true, "" -> a field error naming the field as required (invariant 14)', () => {
+      const result = parseInflationRate(makeForm({ showRealTerms: true, inflationRatePercent: "" }));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe("Inflation rate (%) is required");
+    });
+
+    it('showRealTerms: true, "abc" -> a field error, never coerced to 0', () => {
+      const result = parseInflationRate(makeForm({ showRealTerms: true, inflationRatePercent: "abc" }));
+      expect(result.ok).toBe(false);
+    });
+
+    it('showRealTerms: true, " " -> a field error, never coerced to 0', () => {
+      const result = parseInflationRate(makeForm({ showRealTerms: true, inflationRatePercent: " " }));
+      expect(result.ok).toBe(false);
+    });
+  });
+
+  // AC10: the field error surfaces through buildProjectionInput's own errors bag, but the parsed
+  // rate is never written into the returned ProjectionInput — R1's "inflation is not a
+  // ProjectionInput" holds even though this mapper does validate the field.
+  describe("AC10 — buildProjectionInput surfaces the field error, never the value", () => {
+    it("toggle on with an invalid rate returns ok:false naming inflationRatePercent", () => {
+      const result = buildProjectionInput(
+        makeForm({ showRealTerms: true, inflationRatePercent: "abc" })
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.inflationRatePercent).toBeTruthy();
+    });
+
+    it("toggle off with the same invalid rate returns ok:true — the field is not parsed", () => {
+      const result = buildProjectionInput(
+        makeForm({ showRealTerms: false, inflationRatePercent: "abc" })
+      );
+      expect(result.ok).toBe(true);
+    });
+
+    it("on success, 'inflationRate' is never a key of the built ProjectionInput", () => {
+      const result = buildProjectionInput(
+        makeForm({ showRealTerms: true, inflationRatePercent: "3" })
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect("inflationRate" in result.value).toBe(false);
+    });
+  });
+
+  // AC11: one project() call, two views — runProjection's nominal `value` never depends on the
+  // toggle, only whether `real` is populated alongside it does.
+  it("AC11 — runProjection returns one projection, two views", () => {
+    const on = runProjection(makeForm({ showRealTerms: true, inflationRatePercent: "3" }));
+    const off = runProjection(makeForm({ showRealTerms: false, inflationRatePercent: "3" }));
+
+    expect(on.ok).toBe(true);
+    expect(off.ok).toBe(true);
+    if (!on.ok || !off.ok) return;
+
+    expect(on.real).toBeDefined();
+    if (!on.real) return;
+    expect(on.real.inflationRate).toBeCloseTo(0.03, 10);
+    expect(on.real.rows.length).toBe(on.value.rows.length);
+    expect(on.value).toEqual(off.value);
+    expect(off.real).toBeUndefined();
+  });
+
+  // AC12: toRealTerms' own ProjectionInputError (rate domain) surfaces through runProjection
+  // exactly like project()'s errors do (AC9 above in this file) — not caught and reworded.
+  it("AC12 — the engine error surfaces verbatim, naming inflationRate", () => {
+    const result = runProjection(
+      makeForm({ showRealTerms: true, inflationRatePercent: "150" })
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatch(/^ProjectionInputError: /);
+    expect(result.errors[0]).toContain("inflationRate");
   });
 });

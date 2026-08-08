@@ -435,3 +435,122 @@ export function projectFund(
   const sharePriceGrowth = requirePriceGrowth(fund);
   return project({ ...rest, sharePriceGrowth });
 }
+
+// features/inflation-real-terms/spec.md R1: real vs nominal is a VIEW over an existing project()
+// result, never a second projection — inflation changes no maths (tax stays nominal, IRD taxes
+// nominal dollars and FIF has no inflation adjustment), so threading it through ProjectionInput
+// would imply it does and risk it reaching a tax base (Constitution §2).
+export interface RealProjectionRow extends ProjectionRow {
+  purchasingPowerLostNzd: number;
+}
+
+export interface RealProjectionResult extends Omit<ProjectionResult, "rows"> {
+  rows: RealProjectionRow[];
+  inflationRate: number;
+}
+
+// The rate domain is identical to platformFeeAnnualRate's et al: [0, 1) — deflation (a negative
+// rate) is rejected here specifically because it would put a negative number in a column labelled
+// "lost", which reads as a gain (Constitution §1, spec.md "Rate domain"). Reusing
+// assertHalfOpenRate rather than a bespoke check keeps that domain defined in exactly one place.
+export function toRealTerms(result: ProjectionResult, inflationRate: number): RealProjectionResult {
+  assertHalfOpenRate(inflationRate, "inflationRate");
+
+  let cumulativeContributions = 0;
+
+  const rows: RealProjectionRow[] = result.rows.map((row) => {
+    const t = row.year;
+    // Year 0 is the pre-growth opening snapshot, already in today's dollars (buildYearZeroRow) —
+    // every field there uses exponent 0, not (1+i)^-1, which would inflate rather than deflate it
+    // (spec.md R2).
+    const closingDeflator = t === 0 ? 1 : Math.pow(1 + inflationRate, t);
+    // `opening*` money fields are dated t-1 (openingValueNzd(t) === closingValueAfterTaxNzd(t-1)
+    // nominally) — they are deflated by one year less than the rest of the row's flows.
+    const openingDeflator = t === 0 ? 1 : Math.pow(1 + inflationRate, t - 1);
+
+    const closingSharePriceNzd = row.closingSharePriceNzd / closingDeflator;
+    const closingValueNzd = row.closingValueNzd / closingDeflator;
+    const contributionsGrossNzd = row.contributionsGrossNzd / closingDeflator;
+    const contributionsInvestedNzd = row.contributionsInvestedNzd / closingDeflator;
+    const brokerageFeeNzd = row.brokerageFeeNzd / closingDeflator;
+    const fxSpreadCostNzd = row.fxSpreadCostNzd / closingDeflator;
+    const expenseFeeNzd = row.expenseFeeNzd / closingDeflator;
+    const platformFeeNzd = row.platformFeeNzd / closingDeflator;
+    const totalFeesNzd = row.totalFeesNzd / closingDeflator;
+    const dividendPerShareNzd = row.dividendPerShareNzd / closingDeflator;
+    const grossDividendsNzd = row.grossDividendsNzd / closingDeflator;
+    const usWithholdingNzd = row.usWithholdingNzd / closingDeflator;
+    const dividendsReinvestedNzd = row.dividendsReinvestedNzd / closingDeflator;
+    const dividendsDrawnNzd = row.dividendsDrawnNzd / closingDeflator;
+    const purchasesNzd = row.purchasesNzd / closingDeflator;
+    const taxableIncomeNzd = row.taxableIncomeNzd / closingDeflator;
+    // Tax stays nominal in the sense that it is never re-derived (IRD taxes nominal dollars) — a
+    // deflated *amount* here only re-expresses cash already paid in today's dollars, it does not
+    // feed back into any tax base (that base is costBasisNzd, which is never deflated below).
+    const nzTaxPayableNzd = row.nzTaxPayableNzd / closingDeflator;
+    const totalTaxNzd = row.totalTaxNzd / closingDeflator;
+    const closingValueAfterTaxNzd = row.closingValueAfterTaxNzd / closingDeflator;
+
+    const openingSharePriceNzd = row.openingSharePriceNzd / openingDeflator;
+    const openingValueNzd = row.openingValueNzd / openingDeflator;
+
+    // A running PV sum of each year's own real contribution, not the nominal cumulative total
+    // divided by one end-of-term deflator — the latter is a different (wrong) number (spec.md R3).
+    cumulativeContributions += contributionsGrossNzd;
+
+    // Not a cash outflow: nothing leaves the portfolio, so this is a read-only diff, never fed
+    // back into totalFeesNzd/totalTaxNzd/netGainNzd or subtracted from any balance (spec.md R4).
+    const purchasingPowerLostNzd = t === 0 ? 0 : row.closingValueAfterTaxNzd - closingValueAfterTaxNzd;
+
+    return {
+      ...row,
+      openingSharePriceNzd,
+      closingSharePriceNzd,
+      openingValueNzd,
+      contributionsGrossNzd,
+      contributionsInvestedNzd,
+      brokerageFeeNzd,
+      fxSpreadCostNzd,
+      expenseFeeNzd,
+      platformFeeNzd,
+      totalFeesNzd,
+      dividendPerShareNzd,
+      grossDividendsNzd,
+      usWithholdingNzd,
+      dividendsReinvestedNzd,
+      closingValueNzd,
+      purchasesNzd,
+      dividendsDrawnNzd,
+      taxableIncomeNzd,
+      nzTaxPayableNzd,
+      totalTaxNzd,
+      closingValueAfterTaxNzd,
+      cumulativeContributionsNzd: cumulativeContributions,
+      purchasingPowerLostNzd,
+      // openingShares, closingShares (counts), costBasisNzd (the statutory de minimis base), year,
+      // phase, taxRegime, taxMethod, aboveThreshold all carry over unchanged from the `...row`
+      // spread above — none of them is money that has lost purchasing power (spec.md R3).
+    };
+  });
+
+  const lastRow = rows[rows.length - 1];
+
+  return {
+    rows,
+    // Dated 0 (spec.md "Summary fields") — the initial investment is already in today's dollars,
+    // so it is carried over unchanged rather than divided by (1+i)^0 for show.
+    initialInvestmentNzd: result.initialInvestmentNzd,
+    totalContributionsNzd: lastRow.cumulativeContributionsNzd,
+    finalValueNzd: lastRow.closingValueAfterTaxNzd,
+    // Sums of the deflated rows, never one deflator applied to the nominal total (spec.md
+    // "Summary fields") — mirrors project()'s own totalFeesNzd/totalTaxNzd/totalDividendsDrawnNzd
+    // reduction, just over the real rows instead of the nominal ones.
+    totalFeesNzd: rows.reduce((sum, row) => sum + row.totalFeesNzd, 0),
+    totalTaxNzd: rows.reduce((sum, row) => sum + row.totalTaxNzd, 0),
+    // Same formula as project()'s netGainNzd (invariant 12), applied to the real parts.
+    netGainNzd:
+      lastRow.closingValueAfterTaxNzd - result.initialInvestmentNzd - lastRow.cumulativeContributionsNzd,
+    totalDividendsDrawnNzd: rows.reduce((sum, row) => sum + row.dividendsDrawnNzd, 0),
+    inflationRate,
+  };
+}

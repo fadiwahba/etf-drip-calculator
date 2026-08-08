@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/select";
 import { ChartNoAxesCombined } from "lucide-react";
 import { getFund } from "@/lib/funds";
-import type { ProjectionRow } from "@/lib/projection";
+import type { ProjectionRow, ProjectionResult, RealProjectionResult } from "@/lib/projection";
 import type { Wrapper } from "@/lib/nzTax";
 import {
   buildProjectionInput,
@@ -48,6 +48,10 @@ function buildDefaultFormState(): ProjectionFormState {
     fxSpreadPercent: "0",
     contributionsStopYear: "",
     drawdownStartYear: "",
+    // features/inflation-real-terms/spec.md R6: on by default, 3% is a chosen planning assumption
+    // stated in the UI text below (Constitution §3), not a published statistic.
+    showRealTerms: true,
+    inflationRatePercent: "3",
   };
 }
 
@@ -80,11 +84,27 @@ const InvestmentProjectionCalculator = () => {
     }
   };
 
+  const handleShowRealTermsChange = (checked: boolean) => {
+    setForm((prev) => ({ ...prev, showRealTerms: checked }));
+  };
+
   // Field-level validation (AC10) is checked separately from the engine call (AC9) so a bad
   // field shows its own inline message even when the engine is never reached.
   const fieldCheck = useMemo(() => buildProjectionInput(form), [form]);
   const projection = useMemo(() => runProjection(form), [form]);
   const fieldErrors = fieldCheck.ok ? {} : fieldCheck.errors;
+
+  // features/inflation-real-terms/spec.md AC13: tiles and cells read `real` when the toggle is on
+  // and a real view was computed, `value` otherwise — the only decision made in this file
+  // (Constitution §2, no `/(1+i)` here; that arithmetic lives entirely in toRealTerms).
+  const realResult = projection.ok ? projection.real : undefined;
+  const showReal = form.showRealTerms && realResult !== undefined;
+  const displayResult: ProjectionResult | RealProjectionResult | undefined = projection.ok
+    ? showReal && realResult
+      ? realResult
+      : projection.value
+    : undefined;
+  const headingSuffix = showReal ? " (today's dollars)" : "";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-red-100 to-indigo-100">
@@ -344,6 +364,37 @@ const InvestmentProjectionCalculator = () => {
                 />
                 <FieldError message={fieldErrors.drawdownStartYear} />
               </div>
+
+              <div className="space-y-2 flex items-center gap-2">
+                <input
+                  id="showRealTerms"
+                  type="checkbox"
+                  checked={form.showRealTerms}
+                  onChange={(e) => handleShowRealTermsChange(e.target.checked)}
+                />
+                <Label htmlFor="showRealTerms" className="text-slate-700 font-medium">
+                  Show in today&apos;s dollars (real terms)
+                </Label>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="inflationRatePercent" className="text-slate-700 font-medium">
+                  Inflation rate (% p.a.)
+                </Label>
+                <Input
+                  id="inflationRatePercent"
+                  type="text"
+                  inputMode="decimal"
+                  value={form.inflationRatePercent}
+                  onChange={(e) => handleFieldChange("inflationRatePercent", e.target.value)}
+                  disabled={!form.showRealTerms}
+                  className="border-slate-300 focus:border-blue-500 focus:ring-blue-500"
+                />
+                <FieldError message={fieldErrors.inflationRatePercent} />
+                <p className="text-xs text-slate-500">
+                  3% is a chosen planning assumption, not a published forecast.
+                </p>
+              </div>
             </div>
 
             {!projection.ok && (
@@ -366,46 +417,50 @@ const InvestmentProjectionCalculator = () => {
             )}
 
             {/* Summary Card */}
-            {projection.ok && (
+            {projection.ok && displayResult && (
               <Card className="bg-gradient-to-b from-indigo-100 to-pink-50 border-indigo-100 shadow-inner">
                 <CardContent className="p-6">
                   <div className="flex flex-wrap justify-between gap-6">
                     <div className="text-center space-y-4">
                       <p className="text-sm text-slate-600 font-medium mb-1">
-                        Final Portfolio Value
+                        Final Portfolio Value{headingSuffix}
                       </p>
                       <p className="text-3xl font-bold text-blue-700">
-                        {formatNzd(projection.value.finalValueNzd)}
+                        {formatNzd(displayResult.finalValueNzd)}
                       </p>
                     </div>
                     <div className="text-center space-y-4">
                       <p className="text-sm text-slate-600 font-medium mb-1">
-                        Final-Year Gross Dividends
+                        Final-Year Gross Dividends{headingSuffix}
                       </p>
                       <p className="text-3xl font-bold text-blue-700">
                         {formatNzd(
-                          projection.value.rows[projection.value.rows.length - 1].grossDividendsNzd
+                          displayResult.rows[displayResult.rows.length - 1].grossDividendsNzd
                         )}
                       </p>
                     </div>
                     <div className="text-center space-y-4">
-                      <p className="text-sm text-slate-600 font-medium mb-1">Total Tax</p>
-                      <p className="text-3xl font-bold text-blue-700">
-                        {formatNzd(projection.value.totalTaxNzd)}
+                      <p className="text-sm text-slate-600 font-medium mb-1">
+                        Total Tax{headingSuffix}
                       </p>
-                    </div>
-                    <div className="text-center space-y-4">
-                      <p className="text-sm text-slate-600 font-medium mb-1">Net Gain</p>
                       <p className="text-3xl font-bold text-blue-700">
-                        {formatNzd(projection.value.netGainNzd)}
+                        {formatNzd(displayResult.totalTaxNzd)}
                       </p>
                     </div>
                     <div className="text-center space-y-4">
                       <p className="text-sm text-slate-600 font-medium mb-1">
-                        Total Income Drawn
+                        Net Gain{headingSuffix}
                       </p>
                       <p className="text-3xl font-bold text-blue-700">
-                        {formatNzd(projection.value.totalDividendsDrawnNzd)}
+                        {formatNzd(displayResult.netGainNzd)}
+                      </p>
+                    </div>
+                    <div className="text-center space-y-4">
+                      <p className="text-sm text-slate-600 font-medium mb-1">
+                        Total Income Drawn{headingSuffix}
+                      </p>
+                      <p className="text-3xl font-bold text-blue-700">
+                        {formatNzd(displayResult.totalDividendsDrawnNzd)}
                       </p>
                     </div>
                   </div>
@@ -420,7 +475,7 @@ const InvestmentProjectionCalculator = () => {
         </Card>
 
         {/* Projection Table */}
-        {projection.ok && (
+        {projection.ok && displayResult && (
           <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-lg">
             <CardHeader className="bg-gradient-to-r from-slate-700 to-slate-800 text-white rounded-t-lg">
               <CardTitle className="text-lg md:text-2xl font-thin">
@@ -450,10 +505,15 @@ const InvestmentProjectionCalculator = () => {
                       </th>
                       <th className="text-left p-3 font-semibold text-red-700">NZ Tax</th>
                       <th className="text-left p-3 font-semibold text-slate-700">End Balance</th>
+                      {showReal && realResult && (
+                        <th className="text-left p-3 font-semibold text-slate-500">
+                          Purchasing power lost
+                        </th>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
-                    {projection.value.rows.map((row, index) => (
+                    {displayResult.rows.map((row, index) => (
                       <tr
                         key={row.year}
                         className={`border-b border-slate-100 hover:bg-slate-50 transition-colors ${
@@ -488,11 +548,23 @@ const InvestmentProjectionCalculator = () => {
                         <td className="p-3 font-bold text-slate-800 bg-slate-100">
                           {formatNzd(row.closingValueAfterTaxNzd)}
                         </td>
+                        {showReal && realResult && (
+                          <td className="p-3 text-slate-500 text-sm">
+                            {formatNzd(realResult.rows[index].purchasingPowerLostNzd)}
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              {showReal && realResult && (
+                <p className="text-xs text-slate-500 px-3 pt-3">
+                  Purchasing power lost is a memo, not a cash outflow — nothing leaves the
+                  portfolio. Contributions are a fixed nominal dollar amount; the real columns show
+                  the same nominal contribution shrinking in today&apos;s dollars each year.
+                </p>
+              )}
             </CardContent>
           </Card>
         )}
