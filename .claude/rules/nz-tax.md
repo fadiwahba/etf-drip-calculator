@@ -22,6 +22,26 @@ Applies to overseas shares/ETFs (including all US-domiciled ETFs — VOO, SCHD, 
 | Total **cost** of foreign holdings ≤ **NZ$50,000** (de minimis) | FIF does **not** apply — tax actual dividends at your marginal rate |
 | Above the threshold | FIF applies — tax a **deemed** return, ignore actual dividends |
 
+### ⚠️ The de minimis is a DIRECT-HOLDING rule only — it never applies to a PIE
+
+The NZ$50,000 threshold is relief for a **natural person** holding foreign shares directly. A NZ PIE
+is not a foreign holding: the fund runs the FIF calculation **at fund level, from the first dollar**,
+and attributes the resulting income to you at your PIR. There is no threshold below which a PIE
+investor escapes FIF.
+
+So the wrapper decides whether the threshold is even tested:
+
+| Wrapper | De minimis | Below NZ$50,000 cost |
+|---|---|---|
+| **Direct** (Sharesies/Hatch/IBKR holding US ETFs) | **Applies** | FIF off — actual dividends at your marginal rate |
+| **PIE** (Smartshares, Kernel, InvestNow wrappers) | **Never applies** | FIF still on — deemed return at your PIR (capped 28%) |
+
+**In code:** the threshold test must be gated on `wrapper === "direct"`. A wrapper-blind
+`cost > threshold` check gives a sub-$50k PIE a 0.91% drag where the correct figure is **1.40%**,
+which flatters the PIE in exactly the range where a direct holding is genuinely cheaper. Found by
+the 2026-08-08 audit (`docs/AUDIT-2026-08-08-fable.md`); `docs/PRODUCT-NOTES.md` §1 had recorded the
+rule correctly all along, but this file did not state it, so the engine was built without it.
+
 **Fair Dividend Rate (FDR):** deemed income = **5% of opening market value** each year.
 **Comparative Value (CV):** deemed income = actual economic gain over the year.
 **An individual may use the LOWER of FDR and CV each year** — which means **tax is $0 in a losing
