@@ -10,7 +10,7 @@ its conditional inputs and a live one-line explainer into the calculator.
 edited and zero deleted lines**.
 
 ```ts
-export const WRAPPER_TIE_EPSILON_NZD = 1e-6; // float64 drift, not a decision (invariant 15)
+export const WRAPPER_TIE_EPSILON_NZD = 1e-6; // float64 drift (invariant 15)
 export interface WrapperComparisonYear {
   year: number; pieClosingValueAfterTaxNzd: number; directClosingValueAfterTaxNzd: number;
   differenceNzd: number;          // pie − direct, signed
@@ -18,7 +18,7 @@ export interface WrapperComparisonYear {
 }
 export interface WrapperComparison {
   pie: ProjectionResult; direct: ProjectionResult;
-  years: WrapperComparisonYear[];  // index === year; [0] is the shared snapshot, always a tie
+  years: WrapperComparisonYear[];  // index === year; [0] always ties
   firstDecisiveYear: number | null; firstDecisiveWrapper: Wrapper | null;
   flipYear: number | null; flipWrapper: Wrapper | null;
   finalDifferenceNzd: number; pieTotalTaxNzd: number; directTotalTaxNzd: number;
@@ -27,10 +27,8 @@ export function compareWrappers(input: ProjectionInput): WrapperComparison;
 ```
 
 **D1 — "cheaper" = the bigger pile, not the smaller tax bill.** `cheaperWrapper` ranks
-`closingValueAfterTaxNzd`; less tax is a means, not the answer. The lower-taxed wrapper keeps more
-shares, raising its own FDR base, so its **annual** bill overtakes (Fixture P: `1.00509ⁿ >
-0.0195/0.014`, ≈ year 66) while its balance is ~39% ahead. `pieTotalTaxNzd`/`directTotalTaxNzd`
-report the tax answer without ranking on it.
+`closingValueAfterTaxNzd` (Fixture P: the PIE's annual bill overtakes at `1.00509ⁿ >
+0.0195/0.014`, ≈ year 66, its balance ~39% ahead).
 
 **D2 — flip year.** `firstDecisiveYear` = smallest `y ∈ [1,N]` that is not a tie;
 `firstDecisiveWrapper` its winner. `flipYear` = the smallest later `y` that is not a tie and has a
@@ -39,8 +37,7 @@ report the tax answer without ranking on it.
 `Math.abs(differenceNzd) <= WRAPPER_TIE_EPSILON_NZD`.
 
 **D3 — `usWithholdingRate` is identical in both runs, never zeroed for the PIE.** A NZ PIE holding
-US equities does bear US WHT at fund level; zeroing it would flatter the PIE by exactly the amount
-in question (Constitution §1), break D4, and need an edit to `project()`.
+US equities does bear US WHT at fund level; zeroing it flatters the PIE and breaks D4 (AC19).
 
 **D4 — only the wrapper differs.** `compareWrappers` runs `project({ ...input, wrapper: "pie" })`
 and `project({ ...input, wrapper: "direct" })`. `input.wrapper` is **ignored**; capital, term,
@@ -49,7 +46,7 @@ byte-identical, and `input` is not mutated.
 
 **D5 — the flip year is nominal, and deflator-invariant.** `A/(1+i)^t > B/(1+i)^t ⟺ A > B`, so one
 shared inflation rate cannot change a year's winner; nominal is chosen because the epsilon tie test
-would otherwise move with `i`. The UI still displays real values.
+would otherwise move with `i`.
 
 **D6 — the explainer**, one line: the regime (`FIF`/`Dividend`), the method (`FDR`/`CV`/`actual
 dividends`), whether cost basis is above or below the de minimis (amount from
@@ -68,7 +65,8 @@ crosses NZ$50,000 in year 3. **F** = R with no contributions, `initialDividendPe
 
 ## Acceptance Criteria
 
-One RED test each, run alone. 1–11 append to `lib/__tests__/projection.test.ts`, 12–15 to
+One RED test each, run alone. 1–11, 19 and 20's data pin append to
+`lib/__tests__/projection.test.ts`; 12–15 and 20's explainer pin to
 `components/__tests__/projectionInputs.test.ts`. Money: `toBeCloseTo(x, 6)` unless stated.
 
 1. **Pure append, no regression.** `git diff lib/projection.ts` shows appended lines only; all 147
@@ -100,8 +98,9 @@ One RED test each, run alone. 1–11 append to `lib/__tests__/projection.test.ts
    (`toBeCloseTo(x, 2)`), winners `"direct"` then `"pie"`. `firstDecisiveYear` **1**, `flipYear`
    **2**, `flipWrapper` `"direct"` — the year-4 reversal is not reported; off-by-one gives 1 or 3.
 8. **Deflator-invariant (D5).** Fixture P via `toRealTerms(…, 0.03)`: per-year winners and
-   `flipYear` match the `(…, 0)` run; year-3 real values **117,199.7222** (pie) and **115,428.0899**
-   (direct) at `toBeCloseTo(x, 3)` — the nominal values ÷ `1.03³`.
+   `flipYear` match the `(…, 0)` run; year-3 real values **117,213.545195** (pie) and
+   **115,441.680321** (direct) at `toBeCloseTo(x, 3)` — the nominal values ÷ `1.03³ = 1.092727`
+   exactly (`103³ = 1,092,727`).
 9. **Missing `pir` throws.** `compareWrappers(makeInput({ wrapper: "direct", pir: undefined }))`
    throws `TaxInputError` matching `/pir is required/`, unwrapped — no fallback to `marginalRate`,
    no skipped PIE run.
@@ -139,13 +138,30 @@ One RED test each, run alone. 1–11 append to `lib/__tests__/projection.test.ts
     3%) from a real run. `null` is the usual and correct answer.
 18. `pnpm lint` (zero warnings) · `pnpm build` · `pnpm test` · `pnpm exec tsc --noEmit`, all green
     on a **clean checkout of the commit**.
+19. **WHT is never zeroed on the PIE leg (D3).** Fixture **W** = P plus
+    `initialDividendPerShareNzd` 0.55, `usWithholdingRate` 0.15, `pir` **0.105**, `termYears` 1.
+    Both legs: dividends 10,000 × 0.55 = 5,500, `usWithholdingNzd` **825** on both legs' `rows[1]`;
+    4,675 reinvested buys 425 shares at 11 → `closingValueNzd` **114,675**; FDR 5% × 100,000 =
+    **5,000**, under CV 15,500. PIE: 5,000 × 0.105 = 525, credit capped at 525 → `nzTaxPayableNzd`
+    **0**, value **114,675**, `pieTotalTaxNzd` **825**. Direct: 5,000 × 0.39 = 1,950, credit 825 →
+    payable **1,125**, value **113,550**, `directTotalTaxNzd` **1,950**, `differenceNzd` **1,125**.
+    `pir` 0.105 discriminates: zeroing the PIE's WHT reinvests 5,500 → 115,500 − 525 = **114,975**
+    ≠ 114,675. At `pir` 0.28 the credit is uncapped and both give 114,100.
+20. **The two labels are pinned by number, not by name.** Fixture L (direct wins every year):
+    `pie.rows[1].nzTaxPayableNzd` **1,400** (5,000 × 0.28) vs `direct.rows[1].nzTaxPayableNzd`
+    **875** (5,000 × 0.175) — each leg's own rate, so a swap moves both. Explainer:
+    `makeForm({ taxMode: "compare", initialCapital: "100000", termYears: "3",
+    sharePriceGrowthPercent: "10", dividendYieldPercent: "0", usWithholdingPercent: "0" })` rebuilds
+    P and L; `marginalRatePercent` "39" ⇒ the line contains `NZ PIE leads by ` +
+    `formatNzd(1_936.1645875)` as **one** substring, "17.5" ⇒ `US ETFs (direct) leads by ` +
+    `formatNzd(1_866.5430328125)`. Two mirrored runs, two amounts: a swap misplaces the amount
+    either way.
 
 ## Out of Scope
 
 - Portfolio presets and the Dividend Blend, a W-8BEN toggle, capital drawdown, safe-withdrawal
   modelling, `/retirement`, charts, a per-year compare table.
-- Any change to `project()`, `toRealTerms()`, `findIncomeCrossover()` or the tax maths; ranking by
-  tax paid (D1); zeroing WHT for the PIE (D3); a real-terms flip year (D5).
+- Any change to `project()`, `toRealTerms()`, `findIncomeCrossover()` or the tax maths.
 - Editing `lib/nzTax.ts`, `lib/funds.ts`, `data/*`, `app/*`, `types.ts`, `vitest.config.mts`,
   `package.json`, `components/ui/*`. **No new dependency. No restyling** (a later `/impeccable`).
 
@@ -156,21 +172,22 @@ One RED test each, run alone. 1–11 append to `lib/__tests__/projection.test.ts
   `components/projectionInputs.ts`, `components/__tests__/projectionInputs.test.ts`,
   `components/InvestmentProjectionCalculator.tsx`, this slice's `notes.md`.
 - **A number you cannot reproduce is a blocker, not a fix.** If an expected value here disagrees
-  with your arithmetic, **stop and raise a blocker** — never resolve it in place, even when you turn
-  out to be right. Last slice a coder was right and still left the spec contradicting the code.
+  with your arithmetic, **stop on that AC**: leave its test asserting the spec's number and failing,
+  so the disagreement is visible in the suite. Never reconcile it in place, even when you turn out
+  to be right — last slice a coder raised the blocker and still wrote the engine's value into the
+  test.
 - **Constitution §2:** `compareWrappers` calls `project()` twice and does no tax, fee, growth or
   deflator arithmetic; the mapper and `.tsx` format strings only. Import `PIR_CAP` and
   `DEFAULT_FIF_DE_MINIMIS_NZD` from `lib/nzTax`; never restate them, never compute `Math.min(pir,
   PIR_CAP)` outside `computeAnnualTax`. **§1:** invalid input errors, never coerces to 0;
-  `TaxInputError` propagates unwrapped; `NaN`/`Infinity` never render. Reuse existing validators.
-- **TDD.** ACs 1–15 are **RED-first, mandatory**: write it, run it alone (`pnpm test -t "<name>"`),
-  record the assertion message, then implement. A suite-level import or type error is **not** RED.
+  `TaxInputError` propagates unwrapped; `NaN`/`Infinity` never render.
+- **TDD.** ACs 1–15, 19 and 20 are **RED-first, mandatory**: write it, run it alone
+  (`pnpm test -t "<name>"`), record the assertion message, then implement. A suite-level import or
+  type error is **not** RED.
   AC16 is exempt (`bin/lean-spec advance --no-tdd`; jsdom/testing-library are banned new deps).
 - **Mutation check in `notes.md`** — mutate your own code, report what died. At least: swap the two
-  runs; let a non-wrapper field differ (`usWithholdingRate: 0` on the PIE run); pass `marginalRate`
-  to the PIE run (dropping the cap); `flipYear = firstDecisiveYear`; report the last flip; shift the
-  year scan by one; return `0` for `null`; treat a tie as a flip; rank on `totalTaxNzd`. Default
-  reporter only — **`--reporter=basic` exits non-zero on Vitest 4 whatever the result**, so a
-  harness using it proves nothing. Restore the file between runs.
-- TypeScript strict: no `any`, no non-null assertions, no `as`. Comments explain *why* only: value
-  not tax; WHT held constant; `null` over `0`; why a flip needs a de minimis crossing.
+  runs; zero `usWithholdingRate` on the PIE run; pass `marginalRate` to the PIE run; `flipYear =
+  firstDecisiveYear`; report the last flip; shift the year scan by one; return `0` for `null`; treat
+  a tie as a flip; rank on `totalTaxNzd`. Default reporter only (**`--reporter=basic` exits non-zero
+  on Vitest 4 regardless**). Restore the file between runs.
+- TypeScript strict: no `any`, no non-null assertions, no `as`. Comments explain *why* only.
