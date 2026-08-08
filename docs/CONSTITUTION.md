@@ -22,7 +22,14 @@ Path alias `@/*` → project root. Shared types in root `types.ts`.
 5. **NZ taxes a deemed return, not received dividends.** `tax = dividends × rate` is wrong by
    construction for a foreign holding above the threshold, whatever rate is used.
 6. **Price return = total return − dividend yield**, derived in one place. Never add a yield on top of
-   a total return. Long-run assumptions use the **10-year CAGR**, never trailing 1-year.
+   a total return. Long-run assumptions use the **10-year CAGR**, never trailing 1-year. **Dividend
+   growth is sourced too** — the 10-year per-share distribution CAGR from the issuer's own history.
+   A `0` default is rejected: beside real price growth it collapses the effective yield and swings the
+   headline answer ~18×. Unsourceable means `null` and say so, never a quiet `0`.
+6a. **A default is a claim.** Every shipped default carries the same provenance bar as any other
+   figure. Most users never change one, so a wrong default is a wrong answer for most runs. The
+   2026-08-08 audit found the engine correct and the defaults wrong — that is the cheaper mistake to
+   make and the harder one to notice.
 7. **Report in NZD.** The FIF threshold is a statutory NZ$50,000 and must not drift with FX.
 8. **Provenance or `null`.** Every fund figure carries `asOf` and `source`. Unverifiable means `null`,
    never `0` — zero-as-unknown is a bug this project has already been bitten by.

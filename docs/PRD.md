@@ -41,7 +41,10 @@ inconsistent tax models.
    reinvesting) → Draw (dividends taken as income). Driven by `contributionsStopYear` and
    `drawdownStartYear`, the latter defaulting to the former.
 4. **Crossover reporting** — a target annual income input, and the first year net dividends exceed it
-   **in real terms**.
+   **in real terms**. When the target is **not** reached within the term, report the **portfolio the
+   target actually requires** in today's dollars (`target ÷ net yield after the FDR drag`) alongside
+   what the plan reaches. "Not reached" alone is not an answer; the required capital is (added
+   2026-08-08 — for the 2026-08-08 trigger scenario that is ~$3.5M required against ~$1.2M reached).
 5. **Inflation modelling** — rate input defaulting to **3%**, toggle **default ON**, real (today's
    dollars) as the default view with nominal opt-in, and a per-year **"Purchasing power lost"** column
    kept visually distinct from fees and tax (inflation is not a cash outflow).
@@ -66,6 +69,19 @@ inconsistent tax models.
   in exactly one place and documented at the call site. Never add a yield on top of a total return.
 - **Preset growth assumptions use the 10-year CAGR**, never trailing 1-year. A refresh on 2026-08-06
   briefly introduced 1-year total returns (SCHD at 24.08%) as long-run defaults; that is rejected.
+- **Dividend growth is a sourced figure, never a bare assumption (decided 2026-08-08).** Ship the
+  **10-year per-share distribution CAGR computed from the issuer's own distribution history**, stored
+  in `data/funds.json` with `asOf` and `source` like every other row. Issuers do not publish this as a
+  headline statistic, but they do publish the per-share history it is computed from — that is primary
+  data and meets the same provenance bar. **A `0` default is rejected.** Beside 9.12% price growth it
+  models a fund whose payout ratio falls toward zero, collapsing the effective yield from 3.25% to
+  **0.24%** over 30 years and swinging the headline dividend figure **17.8×**. That is the project's
+  own named failure mode — a plausible number, silently wrong. If a figure cannot be sourced it is
+  `null` and the projection says so; it is never quietly `0`.
+- **Cost defaults are platform-realistic (decided 2026-08-08).** FX spread, brokerage and platform fee
+  default to figures sourced for **Sharesies**, the PRD's named platform (~0.4–0.5% FX each way), each
+  carrying `asOf` and `source`. Zero defaults understate the true cost of every contribution into a
+  USD-denominated asset.
 - **One authoritative fund table.** `etfs.json` and `dividend_portfolio.json` currently disagree about
   SCHD and must be reconciled. Every row carries `asOf`, `source`, `domicile` and `expenseRatio`.
   Unverifiable fields are `null`, never `0` — zero-as-unknown is the bug being fixed.
