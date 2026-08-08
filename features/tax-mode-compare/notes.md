@@ -292,3 +292,109 @@ $ pnpm build
 ✓ Compiled successfully
 ✓ Generating static pages (7/7)
 ```
+
+## Cycle 2
+
+Two test-only fixes from `review.md` (NEEDS_FIXES). No engine change — the reviewer confirmed the
+maths is correct. F3 (commit message body) was already handled by the orchestrator; nothing for me
+to do there.
+
+### F1 — restored the undisclosed loosened precision
+
+`lib/__tests__/projection.test.ts:1773` (AC7, year 2's `differenceNzd`) was
+`toBeCloseTo(-414.36690909091, 4)`. Spec AC7 (`spec.md:96-98`) states an explicit
+`toBeCloseTo(x, 2)` for years 3–4 only; year 2 has no stated precision, so it falls under the
+preamble rule (`spec.md:70`): `toBeCloseTo(x, 6)` unless stated. Changed `4` → `6`:
+
+```
+$ pnpm exec vitest run lib/__tests__/projection.test.ts -t "AC7 — a real flip"
+ Test Files  1 passed (1)
+      Tests  1 passed | 67 skipped (68)
+```
+
+Passes clean at precision 6, confirming the reviewer's own re-run. I checked every other
+`toBeCloseTo` call added in this slice (`lib/__tests__/projection.test.ts:1643` onward) for a
+precision below 6: the only two below 6 are AC7's own years 3–4 (`toBeCloseTo(x, 2)` at lines 1777
+and 1781, exactly matching the spec's explicit AC7 clause) and AC8's real-terms values
+(`toBeCloseTo(x, 3)` at lines 1812–1813, exactly matching the spec's explicit AC8 clause). Both are
+spec-stated, not loosened. No other assertion needed restoring.
+
+### F2 — corrected a comment that claimed a tautology does real work
+
+`lib/__tests__/projection.test.ts:1663-1668` (AC2). The old comment said the identity
+`direct − pie === −differenceNzd` was "pinned as an identity so the 'swap the two runs' mutation is
+caught without a second fixture." It cannot catch that mutation: `differenceNzd` is *defined* as
+`pie − direct` (`lib/projection.ts:678`), so the assertion is algebraically true regardless of which
+run is labelled `pie` and which `direct`. The actual swap discriminator is the per-year literals two
+lines above (`pieExpected`/`directExpected`, lines 1646-1647, asserted at 1659-1660) — those pin
+concrete numbers to each side, so a swap trips them.
+
+New comment states what the assertion really checks: internal consistency of `differenceNzd`
+against the two legs it was derived from, not the swap mutation. The assertion itself is unchanged
+(still a valid consistency check, just not the mutation-catcher the old comment claimed) — nothing
+was deleted per the dispatch's instruction.
+
+I did not find a second instance of this pattern elsewhere in the appended tests.
+
+### Verified: source files untouched this cycle
+
+```
+$ git diff lib/projection.ts
+$ git diff components/projectionInputs.ts
+$ git diff components/InvestmentProjectionCalculator.tsx
+```
+All three produce empty output. Only `lib/__tests__/projection.test.ts` changed this cycle (2
+edits: the precision fix and the comment fix).
+
+### Full mutation set re-run after the precision change (16/16 killed)
+
+Default reporter throughout (`--reporter=basic` still exits non-zero on Vitest 4 regardless of
+result). Each mutation applied via a Python one-off edit, run with `pnpm test`, then the mutated
+file restored from a saved copy (`lib/projection.ts.orig` / `lib/nzTax.ts.orig` /
+`projectionInputs.ts.orig`) and reconfirmed empty with `git diff` before the next mutation — never
+two mutations live at once. A tighter tolerance (4 → 6) can only make a test *more* likely to catch
+a divergence, never less, and that is what these counts confirm: every count matches the reviewer's
+own re-run exactly.
+
+| # | Mutation | File | Result |
+|---|---|---|---|
+| M1 | Swap the two `project()` runs | `lib/projection.ts` | Killed — 12/176 failed |
+| M2 | Zero `usWithholdingRate` on the PIE leg | `lib/projection.ts` | Killed — 2/176 failed |
+| M3 | Pass `marginalRate` as the PIE's `pir` | `lib/projection.ts` | Killed — 6/176 failed |
+| M5 | Report the last flip (drop `break`) | `lib/projection.ts` | Killed — 1/176 failed |
+| M6 | Shift the decisive scan to start at year 2 | `lib/projection.ts` | Killed — 1/176 failed |
+| M7 | Return `0` for `null` (`firstDecisiveYear`/`flipYear`) | `lib/projection.ts` | Killed — 7/176 failed |
+| M8 | Treat a tie as a flip | `lib/projection.ts` | Killed — 1/176 failed |
+| M9 | Rank `cheaperWrapper` on `totalTaxNzd` instead of `closingValueAfterTaxNzd` | `lib/projection.ts` | Killed — 1/176 failed (AC7 only) |
+| X1 | A non-wrapper input differs between legs (`sharePriceGrowth + 0.0001` on direct) | `lib/projection.ts` | Killed — 11/176 failed |
+| X2 | PIR cap removed at source (`Math.min(resolvePir(input), PIR_CAP)` → `resolvePir(input)`) | `lib/nzTax.ts` | Killed — 3/176 failed |
+| X3 | `WRAPPER_TIE_EPSILON_NZD` `1e-6` → `1e6` | `lib/projection.ts` | Killed — 5/176 failed |
+| X4 | `flipYear` off-by-one (`years[i].year + 1`) | `lib/projection.ts` | Killed — 1/176 failed |
+| N1 | `parsePir`: `"compare"` stops parsing `pir` | `components/projectionInputs.ts` | Killed — 6/176 failed |
+| N2 | Flip-label ternary swap (`"pie"` ↔ `"direct"`) | `components/projectionInputs.ts` | Killed — 1/176 failed |
+| N3 | `runProjection`: `value = comparison.pie` instead of `comparison.direct` | `components/projectionInputs.ts` | Killed — 1/176 failed |
+| N4 | "leads by" ternary swap (`finalDifferenceNzd > 0 ? "NZ PIE" : "US ETFs (direct)"` reversed) | `components/projectionInputs.ts` | Killed — 2/176 failed |
+
+16/16 killed. No survivor. Counts match the reviewer's own numbers exactly (their X1-X4/M1-M9/N1-N4
+ledger in `review.md`).
+
+### Verification — clean state, all four gates
+
+```
+$ pnpm test
+ Test Files  4 passed (4)
+      Tests  176 passed (176)
+
+$ pnpm lint
+✔ No ESLint warnings or errors
+
+$ pnpm build
+✓ Compiled successfully
+✓ Generating static pages (7/7)
+
+$ pnpm exec tsc --noEmit
+(exit 0, no output)
+```
+
+Source files confirmed byte-identical to Cycle 1 (`git diff` empty on all three, above). Only
+`lib/__tests__/projection.test.ts` and this `notes.md` changed this cycle.

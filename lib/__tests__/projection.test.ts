@@ -1660,8 +1660,10 @@ describe("tax-mode-compare", () => {
       expect(row.directClosingValueAfterTaxNzd).toBeCloseTo(directExpected[year - 1], 6);
       expect(row.differenceNzd).toBeCloseTo(diffExpected[year - 1], 6);
       expect(row.cheaperWrapper).toBe("pie");
-      // A swap (labelling pie's numbers as direct's and vice versa) negates every difference —
-      // pinned as an identity so the "swap the two runs" mutation is caught without a second fixture.
+      // differenceNzd is defined as pie - direct (lib/projection.ts), so this holds by construction
+      // and is unaffected by a "swap the two runs" mutation — it only pins that differenceNzd stays
+      // internally consistent with the two legs it was derived from. The swap mutation is actually
+      // caught by the per-year literals above (pieExpected/directExpected).
       expect(row.directClosingValueAfterTaxNzd - row.pieClosingValueAfterTaxNzd).toBeCloseTo(
         -row.differenceNzd,
         6
@@ -1770,7 +1772,7 @@ describe("tax-mode-compare", () => {
     expect(comparison.pie.rows[2].taxableIncomeNzd).toBeCloseTo(2_214.4, 6);
     expect(y2.pieClosingValueAfterTaxNzd).toBeCloseTo(48_499.38618181818, 6);
     expect(y2.directClosingValueAfterTaxNzd).toBeCloseTo(48_913.75309090909, 6);
-    expect(y2.differenceNzd).toBeCloseTo(-414.36690909091, 4);
+    expect(y2.differenceNzd).toBeCloseTo(-414.36690909091, 6);
     expect(y2.cheaperWrapper).toBe("direct");
 
     const y3 = comparison.years[3];
