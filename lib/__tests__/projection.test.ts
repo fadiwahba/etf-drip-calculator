@@ -1879,4 +1879,54 @@ describe("tax-mode-compare", () => {
       }
     }
   });
+
+  // AC19 (D3): US withholding is never zeroed on the PIE leg — a NZ PIE holding US equities still
+  // bears US WHT at fund level, and `.claude/rules/nz-tax.md` carries no PIE exemption from it.
+  // Fixture W = P plus initialDividendPerShareNzd 0.55, usWithholdingRate 0.15, pir 0.105 (not the
+  // fixtures' usual 0.28 — at 0.28 the WHT credit is uncapped and both legs land on the identical
+  // 114,100, blind to a mutant that zeroes WHT on just the PIE leg), termYears 1.
+  it("AC19 — US withholding applies to both legs (Fixture W, pir 0.105)", () => {
+    const comparison = compareWrappers(
+      makeFixtureP({
+        initialDividendPerShareNzd: 0.55,
+        usWithholdingRate: 0.15,
+        pir: 0.105,
+        termYears: 1,
+      })
+    );
+
+    const pieRow = comparison.pie.rows[1];
+    const directRow = comparison.direct.rows[1];
+
+    expect(pieRow.grossDividendsNzd).toBeCloseTo(5_500, 6);
+    expect(directRow.grossDividendsNzd).toBeCloseTo(5_500, 6);
+    expect(pieRow.usWithholdingNzd).toBeCloseTo(825, 6);
+    expect(directRow.usWithholdingNzd).toBeCloseTo(825, 6);
+    expect(pieRow.closingValueNzd).toBeCloseTo(114_675, 6);
+    expect(directRow.closingValueNzd).toBeCloseTo(114_675, 6);
+    expect(pieRow.taxableIncomeNzd).toBeCloseTo(5_000, 6);
+    expect(directRow.taxableIncomeNzd).toBeCloseTo(5_000, 6);
+
+    // PIE: FDR income 5,000 x pir 0.105 = 525; the 825 WHT credit is capped at that 525 liability.
+    expect(pieRow.nzTaxPayableNzd).toBeCloseTo(0, 6);
+    expect(pieRow.closingValueAfterTaxNzd).toBeCloseTo(114_675, 6);
+    expect(comparison.pieTotalTaxNzd).toBeCloseTo(825, 6);
+
+    // Direct: 5,000 x marginalRate 0.39 = 1,950; credit 825 -> payable 1,125.
+    expect(directRow.nzTaxPayableNzd).toBeCloseTo(1_125, 6);
+    expect(directRow.closingValueAfterTaxNzd).toBeCloseTo(113_550, 6);
+    expect(comparison.directTotalTaxNzd).toBeCloseTo(1_950, 6);
+
+    expect(comparison.years[1].differenceNzd).toBeCloseTo(1_125, 6);
+  });
+
+  // AC20 (lib half): the two labels are pinned by each leg's own rate, not by name — Fixture L
+  // (marginalRate 0.175, pir stays the default 0.28) so pie.rows[1].nzTaxPayableNzd (28% of the
+  // 5,000 FDR income) and direct.rows[1].nzTaxPayableNzd (17.5% of it) differ, and a swap of the
+  // two runs' labels would move both numbers, not just the sign AC4 already covers.
+  it("AC20 — wrapper labels pinned by their own rate, not swapped (Fixture L)", () => {
+    const comparison = compareWrappers(makeFixtureL());
+    expect(comparison.pie.rows[1].nzTaxPayableNzd).toBeCloseTo(1_400, 6); // 5,000 x 0.28
+    expect(comparison.direct.rows[1].nzTaxPayableNzd).toBeCloseTo(875, 6); // 5,000 x 0.175
+  });
 });

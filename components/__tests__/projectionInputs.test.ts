@@ -701,4 +701,38 @@ describe("tax-mode-compare mapper", () => {
       expect(explainer).not.toMatch(/NaN|Infinity|undefined/);
     });
   });
+
+  // AC20 (explainer half): two mirrored makeForm runs rebuild lib's Fixture P and Fixture L (same
+  // capital/growth/term/yield/WHT, only marginalRatePercent differs), where both the leader and the
+  // amount change between runs — a swapped wrapper label would put the right amount beside the
+  // wrong wrapper in either direction, which a bare toContain("US ETFs (direct)") could not detect
+  // since that string also appears earlier in the line as the direct leg's own rate label.
+  describe("AC20 — explainer labels pinned by number, not swapped (compare mode)", () => {
+    const baseForm = {
+      taxMode: "compare" as const,
+      initialCapital: "100000",
+      termYears: "3",
+      sharePriceGrowthPercent: "10",
+      dividendYieldPercent: "0",
+      usWithholdingPercent: "0",
+    };
+
+    it("marginalRatePercent '39' -> NZ PIE leads by the exact amount (rebuilds Fixture P)", () => {
+      const form = makeForm({ ...baseForm, marginalRatePercent: "39" });
+      const run = runProjection(form);
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).toContain(`NZ PIE leads by ${formatNzd(1_936.1645875)}`);
+    });
+
+    it("marginalRatePercent '17.5' -> US ETFs (direct) leads by the exact amount (rebuilds Fixture L)", () => {
+      const form = makeForm({ ...baseForm, marginalRatePercent: "17.5" });
+      const run = runProjection(form);
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).toContain(`US ETFs (direct) leads by ${formatNzd(1_866.5430328125)}`);
+    });
+  });
 });
