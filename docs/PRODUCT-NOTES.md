@@ -32,6 +32,40 @@ The better wrapper **flips depending on portfolio size and income**:
 
 A calculator that just picks one mode hides the single most valuable decision the user faces.
 
+### The PIE vs direct choice is concrete, not hypothetical — a PIE wrapper for SCHD exists
+
+**Foundation Series US Dividend Equity Fund** (InvestNow, manager FundRock NZ Limited) invests
+**exclusively into SCHD** — the actual ETF, not a proxy or a similar index — inside a NZ PIE. It was
+the first NZ fund to offer SCHD in a PIE structure. Checked 2026-08-08:
+<https://investnow.co.nz/dividendincome/>
+
+| | |
+|---|---|
+| Underlying | Schwab U.S. Dividend Equity ETF (SCHD) |
+| Structure | PIE — tax capped at **PIR 28%** |
+| Management fee | **0.06% p.a.** |
+| Transaction fee | **0.50%** buy/sell |
+| Currency | No NZD hedging stated |
+| Distributions | Quarterly, not guaranteed |
+
+**Why this matters to the model.** It makes the PIE-vs-direct comparison a real decision about *the
+same underlying asset*, so growth and yield are genuinely identical across the two legs and only the
+wrapper differs — exactly the comparison `compareWrappers()` computes. At a 33% marginal rate the
+direct route costs 1.65% of value a year against the PIE's 1.40%: **0.25pp**, compounding.
+
+Two caveats the calculator does not yet model:
+
+- **The 0.50% buy/sell fee is per transaction.** On $1,000/month that is ~$5 a trade, broadly
+  comparable to a Sharesies FX spread each way — but it is a different cost shape (a percentage of
+  every contribution rather than an FX conversion), and the fee fields do not distinguish them.
+- **The de minimis makes direct genuinely cheaper while small.** Below NZ$50,000 cost a direct
+  holding pays no FIF at all; a PIE runs FIF from dollar one. This is the crossover the tool exists
+  to surface, and the 2026-08-08 audit found the engine currently gets it **wrong** — see
+  `.claude/rules/nz-tax.md` and `docs/AUDIT-2026-08-08-fable.md` finding #1.
+
+**Not verified:** the fund's own performance history, its PDS, or its tracking difference against
+SCHD. Do not quote a return figure for it without reading the PDS first (Constitution §3).
+
 ### Proposed UX
 
 **A three-way segmented control, not a binary switch:**
