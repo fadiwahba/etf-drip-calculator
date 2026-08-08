@@ -1517,4 +1517,42 @@ describe("crossover-target-income", () => {
     const single = project(makeInput({ termYears: 1 }));
     assertCrossoverAllFinite(findIncomeCrossover(toRealTerms(single, 0.03), 0));
   });
+
+  // AC20 (R4): "sustained" runs to the end of the term, never a fixed lookahead. Fixture V's de
+  // minimis crossing dips year 5's income 3 years after year 1 first qualifies — every other
+  // fixture's dip lands immediately after the qualifying year, so this is the only AC that can
+  // distinguish "scan to N" from a short lookahead. Cannot RED (the shipped scan is already
+  // correct); its evidence is the R4 mutation dying (see notes.md Cycle 1).
+  it("AC20 — sustained runs to the end, not a fixed lookahead (Fixture V, i = 0, target 800)", () => {
+    const real0 = toRealTerms(project(makeFixtureT({ initialShares: 4_600, initialDividendPerShareNzd: 0.25, termYears: 7 })), 0);
+    expect(real0.rows[3].costBasisNzd).toBeCloseTo(49_622.83926654203, 6);
+    expect(real0.rows[3].taxRegime).toBe("dividend");
+    expect(real0.rows[4].costBasisNzd).toBeCloseTo(51_127.12400668227, 6);
+    expect(real0.rows[4].taxRegime).toBe("fif");
+
+    const expected = [
+      0, 847.55, 947.92110875, 1060.17866605371875, 707.8987012424659, 786.4754570803796,
+      873.7742328163018, 970.7631726589113,
+    ];
+    const crossover = findIncomeCrossover(real0, 800);
+    expected.forEach((v, i) => expect(crossover.netIncomeByYearNzd[i]).toBeCloseTo(v, 6));
+    expect(crossover.firstYearAboveTarget).toBe(1);
+    expect(crossover.crossoverYear).toBe(6);
+    expect(crossover.incomeAtCrossoverNzd).toBeCloseTo(873.7742328163018, 6);
+    expect(crossover.finalYearNetIncomeNzd).toBeCloseTo(970.7631726589113, 6);
+  });
+
+  // AC21 (R8): net income may be negative and must never be clamped. Fixture W's 1.1% yield sits
+  // under the 1.65% FDR drag for every year, so net income is negative from year 1. Cannot RED
+  // (the shipped code already omits any clamp); its evidence is the R8 mutation dying (see
+  // notes.md Cycle 1).
+  it("AC21 — negative net income, never clamped (Fixture W, i = 0, target 0)", () => {
+    const real0 = toRealTerms(project(makeFixtureT({ initialDividendPerShareNzd: 0.1, termYears: 3 })), 0);
+    const expected = [0, -550, -601.975, -658.8616375];
+    const crossover = findIncomeCrossover(real0, 0);
+    expected.forEach((v, i) => expect(crossover.netIncomeByYearNzd[i]).toBeCloseTo(v, 6));
+    expect(crossover.finalYearNetIncomeNzd).toBeCloseTo(-658.8616375, 6);
+    expect(crossover.firstYearAboveTarget).toBeNull();
+    expect(crossover.crossoverYear).toBeNull();
+  });
 });

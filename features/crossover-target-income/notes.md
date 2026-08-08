@@ -165,3 +165,119 @@ Added **AC6b** (`lib/__tests__/projection.test.ts`) beyond the spec's numbered A
 target straight from `real10.rows[3].grossDividendsNzd - real10.rows[3].totalTaxNzd` rather than
 the literal `3,749.2875`, to genuinely pin `>=` at the bit-exact float64 boundary after mutation
 #6 revealed the literal-value boundary in AC6 doesn't reliably distinguish the operator.
+
+## Cycle 1
+
+### On the AC4 process point
+
+The review is right and the guardrail is accepted as stated: **a number I cannot reproduce is a
+blocker, not a fix, even when I turn out to be right.** Resolving AC4 in place last cycle
+substituted my own adjudication for the escalation the spec demanded — the fact that three
+independent derivations (mine, the reviewer's hand derivation, and the engine) agreed does not
+retroactively make that legitimate. The refined `spec.md` AC4 (`spec.md:65-68`) now carries the
+corrected `i = 0` array
+(`[0, 3850, 4383.225, 4990.3016625, 5681.45844275625, 6468.34043707799]`), which is
+byte-identical to `lib/__tests__/projection.test.ts`'s existing AC4 test
+(`expected0` at line 1380) — **no test change was needed for AC4 this cycle**, only re-verification
+that the two now agree on paper as well as in code. Confirmed by inspection: spec and test literals
+match to every digit.
+
+### AC20 and AC21 — independently re-derived before writing a single assertion
+
+Per this cycle's guardrail, both fixtures were verified against the engine **before** trusting the
+spec's literals — a temporary scratch test (`project(fixtureV/W)` → `toRealTerms(..., 0)` →
+`findIncomeCrossover`, run once via `pnpm exec vitest run --reporter=verbose`, then deleted; it
+never touched a tracked file) printed:
+
+- **Fixture V** — `costBasisNzd`: `rows[3]` **49,622.83926654203** (`taxRegime "dividend"`),
+  `rows[4]` **51,127.12400668227** (`"fif"`); `netIncomeByYearNzd` `[0, 847.55, 947.9211087500003,
+  1060.178666053719, 707.8987012424661, 786.4754570803798, 873.774232816302, 970.763172658912]`;
+  target 800 ⇒ `firstYearAboveTarget` **1**, `crossoverYear` **6**, `incomeAtCrossoverNzd`
+  **873.774232816302**, `finalYearNetIncomeNzd` **970.763172658912**.
+- **Fixture W** — `netIncomeByYearNzd` `[0, -549.9999999999998, -601.9749999999999,
+  -658.8616374999999]`, `finalYearNetIncomeNzd` **-658.8616374999999**; target 0 ⇒
+  `firstYearAboveTarget` and `crossoverYear` both **null**.
+
+Every one of these agrees with the spec's stated literals (`spec.md` AC20/AC21) to float64
+precision — the tiny digit differences (e.g. `1060.178666053719` printed vs the spec's
+`1060.17866605371875`) are the same IEEE-754 value at different print precision, not a
+disagreement. No blocker raised — the numbers reproduce.
+
+Added both as tests in `lib/__tests__/projection.test.ts` (`describe("crossover-target-income")`,
+appended after AC12 — no existing test edited):
+
+- **AC20** — Fixture V (`initialShares: 4_600, initialDividendPerShareNzd: 0.25, termYears: 7`
+  over `makeFixtureT`), pins the `costBasisNzd`/`taxRegime` de minimis crossing at year 4, the full
+  8-entry `netIncomeByYearNzd` series, and `crossoverYear` **6** vs `firstYearAboveTarget` **1** —
+  the 3-year-later dip that a 2-year lookahead cannot see.
+- **AC21** — Fixture W (`initialDividendPerShareNzd: 0.1, termYears: 3` over `makeFixtureT`), pins
+  the negative `netIncomeByYearNzd` series and `finalYearNetIncomeNzd < 0`, with `crossoverYear`
+  and `firstYearAboveTarget` both `null` at target 0.
+
+Both pass green against the unmodified implementation (`pnpm exec vitest run -t "AC20"` / `"AC21"`,
+each 1 passed alone). Neither can RED in the usual sense — the shipped code already satisfies both
+(spec's own note, `spec.md:173`) — so their evidence is the mutation dying, per the R4/R8 section
+below.
+
+### Mutation testing — R4 and R8, the two survivors, now die
+
+Default reporter throughout (no `--reporter=basic` — Vitest 4 exits non-zero regardless of
+result with that flag); `git diff --stat lib/projection.ts` confirmed empty before, between, and
+after every mutation.
+
+| # | Mutation | Result |
+|---|---|---|
+| **R4** | Sustained scan bound `t < netIncomeByYearNzd.length` → `t < Math.min(year + 2, netIncomeByYearNzd.length)` | **Killed — 1 failed** (AC20: `crossoverYear` expected 6, got 1) |
+| **R8** | `netIncomeByYearNzd` wrapped in `Math.max(0, …)` | **Killed — 1 failed** (AC21: `netIncomeByYearNzd[1]` expected -550, got 0) |
+
+Both restored immediately after each run; `git diff lib/projection.ts` is empty at the end (pasted
+below).
+
+### Re-ran the prior 9 mutations (all still killed, unchanged from Cycle 0)
+
+Same nine from Cycle 0's applicable set (M8 remains type-prevented, unchanged), re-run against the
+147-test suite (145 + AC20 + AC21) to confirm the two new tests didn't accidentally weaken any
+existing kill:
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | Drop the WHT term | **Killed** — 11 failed |
+| M2 | Drop the `nzTaxPayableNzd` term | **Killed** — 11 failed |
+| M3 | Subtract `totalFeesNzd` too | **Killed** — 1 failed |
+| M4 | Use `dividendsDrawnNzd` instead of `grossDividendsNzd` | **Killed** — 11 failed |
+| M5 | `crossoverYear = firstYearAboveTarget` (after the sustained loop) | **Killed** — 2 failed |
+| M6 | `≥` → `>` (and sustained `<` → `≤`) | **Killed** — 1 failed (AC6b) |
+| M7 | Scan starts at year 0 instead of year 1 | **Killed** — 2 failed |
+| M9 | Return `0` instead of `null` | **Killed** — 3 failed |
+| M10 | Drop target validation | **Killed** — 1 failed |
+
+11/11 applicable mutations killed this cycle (9 pre-existing + R4 + R8); M8 remains
+type-prevented, as before.
+
+### `git diff lib/projection.ts` — empty, confirmed
+
+```
+$ git diff lib/projection.ts
+$
+```
+No output — the source file is byte-identical to Cycle 0. Only `lib/__tests__/projection.test.ts`
+changed this cycle (38 insertions, 0 deletions: AC20 and AC21, appended after AC12, no existing
+assertion touched).
+
+### Verification — all four gates, clean
+
+```
+$ pnpm test
+ Test Files  4 passed (4)
+      Tests  147 passed (147)
+
+$ pnpm lint
+✔ No ESLint warnings or errors
+
+$ pnpm build
+✓ Compiled successfully
+✓ Generating static pages (7/7)
+
+$ pnpm exec tsc --noEmit
+(exit 0, no output)
+```
