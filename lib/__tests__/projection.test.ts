@@ -4,6 +4,8 @@ import {
   projectFund,
   toRealTerms,
   findIncomeCrossover,
+  compareWrappers,
+  WRAPPER_TIE_EPSILON_NZD,
   ProjectionInputError,
   type ProjectionInput,
   type ProjectionResult,
@@ -1554,5 +1556,327 @@ describe("crossover-target-income", () => {
     expect(crossover.finalYearNetIncomeNzd).toBeCloseTo(-658.8616375, 6);
     expect(crossover.firstYearAboveTarget).toBeNull();
     expect(crossover.crossoverYear).toBeNull();
+  });
+});
+
+// features/tax-mode-compare/spec.md ACs 1-11. Fixtures P/C/L/E/R/F follow the spec's "Fixtures"
+// section verbatim: makeInput defaults except initialSharePriceNzd 10, sharePriceGrowth 0.1,
+// marginalRate 0.39, pir 0.28, usWithholdingRate 0, no fees, no contributions, dividendGrowth 0.
+describe("tax-mode-compare", () => {
+  function makeFixtureP(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeInput({
+      initialSharePriceNzd: 10,
+      sharePriceGrowth: 0.1,
+      marginalRate: 0.39,
+      pir: 0.28,
+      usWithholdingRate: 0,
+      dividendGrowth: 0,
+      initialShares: 10_000,
+      initialDividendPerShareNzd: 0,
+      termYears: 3,
+      ...overrides,
+    });
+  }
+
+  function makeFixtureC(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeFixtureP({ pir: 0.39, ...overrides });
+  }
+
+  function makeFixtureL(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeFixtureP({ marginalRate: 0.175, ...overrides });
+  }
+
+  function makeFixtureE(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeFixtureP({ marginalRate: 0.28, ...overrides });
+  }
+
+  function makeFixtureR(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeInput({
+      initialSharePriceNzd: 10,
+      sharePriceGrowth: 0.1,
+      marginalRate: 0.39,
+      pir: 0.28,
+      usWithholdingRate: 0,
+      dividendGrowth: 0,
+      initialShares: 4_000,
+      contributionsPerYear: 1,
+      contributionTiming: "end",
+      contributionPerEventNzd: 4_000,
+      initialDividendPerShareNzd: 0,
+      termYears: 4,
+      ...overrides,
+    });
+  }
+
+  function makeFixtureF(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
+    return makeFixtureR({
+      contributionPerEventNzd: 0,
+      initialDividendPerShareNzd: 0.1,
+      fifThresholdNzd: 40_802.4,
+      ...overrides,
+    });
+  }
+
+  // AC1: pure append / regression pin — invokes no new code (project()/makeInput are already
+  // exercised above), matching the disclosed "AC1 does not RED" pattern from
+  // crossover-target-income/notes.md: this pins the pre-existing golden fixture is unaffected by
+  // this slice's append, it is not itself a feature test.
+  it("AC1 — pure append: the pre-existing golden fixture is unaffected", () => {
+    const result = project(
+      makeInput({
+        initialShares: 1000,
+        initialSharePriceNzd: 10,
+        sharePriceGrowth: 0.1,
+        termYears: 2,
+        initialDividendPerShareNzd: 0.5,
+        dividendGrowth: 0.1,
+        contributionPerEventNzd: 1_100,
+        contributionTiming: "start",
+        wrapper: "direct",
+        marginalRate: 0.33,
+      })
+    );
+    expect(result.rows[2].closingValueAfterTaxNzd).toBeCloseTo(15_596.48494, 6);
+    expect(result.netGainNzd).toBeCloseTo(3_396.48494, 6);
+  });
+
+  // AC2: Fixture P — runs not swapped, cheaperWrapper "pie" throughout, totals.
+  it("AC2 — Fixture P; runs not swapped", () => {
+    const comparison = compareWrappers(makeFixtureP());
+    const pieExpected = [108_600, 117_939.6, 128_082.4056];
+    const directExpected = [108_050, 116_748.025, 126_146.2410125];
+    const diffExpected = [550, 1_191.575, 1_936.1645875];
+
+    expect(comparison.years.length).toBe(comparison.pie.rows.length);
+    expect(comparison.pie.rows.length).toBe(4); // year 0..3
+    for (let year = 0; year < comparison.years.length; year++) {
+      expect(comparison.years[year].year).toBe(year);
+    }
+    expect(comparison.years[0].cheaperWrapper).toBeNull();
+
+    for (let year = 1; year <= 3; year++) {
+      const row = comparison.years[year];
+      expect(row.pieClosingValueAfterTaxNzd).toBeCloseTo(pieExpected[year - 1], 6);
+      expect(row.directClosingValueAfterTaxNzd).toBeCloseTo(directExpected[year - 1], 6);
+      expect(row.differenceNzd).toBeCloseTo(diffExpected[year - 1], 6);
+      expect(row.cheaperWrapper).toBe("pie");
+      // A swap (labelling pie's numbers as direct's and vice versa) negates every difference —
+      // pinned as an identity so the "swap the two runs" mutation is caught without a second fixture.
+      expect(row.directClosingValueAfterTaxNzd - row.pieClosingValueAfterTaxNzd).toBeCloseTo(
+        -row.differenceNzd,
+        6
+      );
+    }
+
+    expect(comparison.finalDifferenceNzd).toBeCloseTo(1_936.1645875, 6);
+    expect(comparison.pieTotalTaxNzd).toBeCloseTo(4_571.5544, 6);
+    expect(comparison.directTotalTaxNzd).toBeCloseTo(6_333.5614875, 6);
+  });
+
+  // AC3: PIR cap (Fixture C, pir 0.39) — identical to P because computeAnnualTax's own
+  // Math.min(pir, PIR_CAP) (unchanged, imported, never restated here) caps 0.39 to 0.28.
+  it("AC3 — PIR cap (Fixture C): identical to P despite pir 0.39", () => {
+    const p = compareWrappers(makeFixtureP());
+    const c = compareWrappers(makeFixtureC());
+    expect(c.finalDifferenceNzd).toBeCloseTo(1_936.1645875, 6);
+    expect(c.years).toEqual(p.years);
+  });
+
+  // AC4: ordering reverses at/below 28% (Fixture L, marginalRate 0.175) — direct becomes cheaper
+  // every year, no flip (it never wins-then-loses, it simply always wins).
+  it("AC4 — ordering reverses at/below 28% (Fixture L)", () => {
+    const comparison = compareWrappers(makeFixtureL());
+    const directExpected = [109_125, 119_082.65625, 129_948.9486328125];
+    const diffExpected = [-525, -1_143.05625, -1_866.5430328125];
+    for (let year = 1; year <= 3; year++) {
+      expect(comparison.years[year].directClosingValueAfterTaxNzd).toBeCloseTo(
+        directExpected[year - 1],
+        6
+      );
+      expect(comparison.years[year].differenceNzd).toBeCloseTo(diffExpected[year - 1], 6);
+      expect(comparison.years[year].cheaperWrapper).toBe("direct");
+    }
+    expect(comparison.flipYear).toBeNull();
+  });
+
+  // AC5: exact tie (Fixture E, both rates 0.28).
+  it("AC5 — exact tie (Fixture E, both rates 0.28)", () => {
+    const comparison = compareWrappers(makeFixtureE());
+    for (const year of comparison.years) {
+      expect(year.differenceNzd).toBe(0);
+      expect(year.cheaperWrapper).toBeNull();
+    }
+    expect(comparison.firstDecisiveYear).toBeNull();
+    expect(comparison.firstDecisiveWrapper).toBeNull();
+    expect(comparison.flipYear).toBeNull();
+    expect(comparison.flipWrapper).toBeNull();
+    expect(comparison.pieTotalTaxNzd).toBe(comparison.directTotalTaxNzd);
+  });
+
+  // AC6: de minimis (Fixture R) — no dividends means a 0 below-threshold tax base, so years 1-2 are
+  // identical between the two wrappers; year 3 crosses the threshold and the rates diverge.
+  it("AC6 — de minimis (Fixture R)", () => {
+    const comparison = compareWrappers(makeFixtureR());
+
+    const y1 = comparison.years[1];
+    expect(y1.pieClosingValueAfterTaxNzd).toBeCloseTo(48_000, 6);
+    expect(y1.directClosingValueAfterTaxNzd).toBeCloseTo(48_000, 6);
+    expect(y1.differenceNzd).toBe(0);
+    expect(comparison.pie.rows[1].taxRegime).toBe("dividend");
+    expect(comparison.direct.rows[1].taxRegime).toBe("dividend");
+
+    const y2 = comparison.years[2];
+    expect(y2.pieClosingValueAfterTaxNzd).toBeCloseTo(56_800, 6);
+    expect(y2.directClosingValueAfterTaxNzd).toBeCloseTo(56_800, 6);
+    expect(y2.differenceNzd).toBe(0);
+
+    const y3 = comparison.years[3];
+    expect(comparison.pie.rows[3].costBasisNzd).toBeCloseTo(52_000, 6);
+    expect(comparison.pie.rows[3].taxRegime).toBe("fif");
+    expect(y3.pieClosingValueAfterTaxNzd).toBeCloseTo(65_684.8, 6);
+    expect(y3.directClosingValueAfterTaxNzd).toBeCloseTo(65_372.4, 6);
+    expect(y3.differenceNzd).toBeCloseTo(312.4, 6);
+
+    const y4 = comparison.years[4];
+    expect(y4.pieClosingValueAfterTaxNzd).toBeCloseTo(75_333.6928, 6);
+    expect(y4.directClosingValueAfterTaxNzd).toBeCloseTo(74_634.8782, 6);
+    expect(y4.differenceNzd).toBeCloseTo(698.8146, 6);
+
+    expect(comparison.firstDecisiveYear).toBe(3);
+    expect(comparison.firstDecisiveWrapper).toBe("pie");
+    expect(comparison.flipYear).toBeNull();
+  });
+
+  // AC7: a real flip (Fixture F) — year 1 both below threshold (dividend), year 2 straddles it
+  // (direct still below, pie above via FDR), years 3-4 both above (fif); the winner flips at year 2
+  // and the year-4 reversal back to pie is deliberately not reported (only the first flip is).
+  it("AC7 — a real flip (Fixture F)", () => {
+    const comparison = compareWrappers(makeFixtureF());
+
+    const y1 = comparison.years[1];
+    expect(comparison.pie.rows[1].taxRegime).toBe("dividend");
+    expect(comparison.direct.rows[1].taxRegime).toBe("dividend");
+    expect(y1.pieClosingValueAfterTaxNzd).toBeCloseTo(44_288, 6);
+    expect(y1.directClosingValueAfterTaxNzd).toBeCloseTo(44_244, 6);
+    expect(y1.differenceNzd).toBeCloseTo(44, 6);
+    expect(y1.cheaperWrapper).toBe("pie");
+
+    const y2 = comparison.years[2];
+    expect(comparison.direct.rows[2].costBasisNzd).toBeCloseTo(40_802.2181818181818, 6);
+    expect(comparison.direct.rows[2].aboveThreshold).toBe(false);
+    expect(comparison.pie.rows[2].costBasisNzd).toBeCloseTo(40_802.6181818181818, 6);
+    expect(comparison.pie.rows[2].aboveThreshold).toBe(true);
+    expect(comparison.pie.rows[2].taxMethod).toBe("fdr");
+    expect(comparison.pie.rows[2].taxableIncomeNzd).toBeCloseTo(2_214.4, 6);
+    expect(y2.pieClosingValueAfterTaxNzd).toBeCloseTo(48_499.38618181818, 6);
+    expect(y2.directClosingValueAfterTaxNzd).toBeCloseTo(48_913.75309090909, 6);
+    expect(y2.differenceNzd).toBeCloseTo(-414.36690909091, 4);
+    expect(y2.cheaperWrapper).toBe("direct");
+
+    const y3 = comparison.years[3];
+    expect(y3.differenceNzd).toBeCloseTo(-184.4, 2);
+    expect(y3.cheaperWrapper).toBe("direct");
+
+    const y4 = comparison.years[4];
+    expect(y4.differenceNzd).toBeCloseTo(91.26, 2);
+    expect(y4.cheaperWrapper).toBe("pie");
+
+    expect(comparison.firstDecisiveYear).toBe(1);
+    expect(comparison.firstDecisiveWrapper).toBe("pie");
+    expect(comparison.flipYear).toBe(2);
+    expect(comparison.flipWrapper).toBe("direct");
+  });
+
+  // AC8: deflator-invariant (D5) — one shared inflation rate cannot change a year's winner
+  // (A/(1+i)^t > B/(1+i)^t ⟺ A > B), so the real (i = 0.03) winners/flipYear must match the nominal
+  // (i = 0) ones exactly. BLOCKER: spec.md's literal year-3 real values (117,199.7222 /
+  // 115,428.0899) disagree with the actual, unmodified toRealTerms() output for Fixture P's own
+  // nominal figures (already pinned above in AC2) — see notes.md "Blocker: AC8 deflator
+  // arithmetic" for the full derivation. Per Coder Guardrails, these are the engine-verified values,
+  // not the spec's array.
+  it("AC8 — deflator-invariant (D5): winners/flipYear match at i=0 and i=0.03; year-3 real values", () => {
+    const comparison = compareWrappers(makeFixtureP());
+    const realPie = toRealTerms(comparison.pie, 0.03);
+    const realDirect = toRealTerms(comparison.direct, 0.03);
+
+    for (let year = 0; year < comparison.years.length; year++) {
+      const nominalWinner = comparison.years[year].cheaperWrapper;
+      const realDiff =
+        realPie.rows[year].closingValueAfterTaxNzd - realDirect.rows[year].closingValueAfterTaxNzd;
+      const realWinner: "pie" | "direct" | null =
+        Math.abs(realDiff) <= WRAPPER_TIE_EPSILON_NZD ? null : realDiff > 0 ? "pie" : "direct";
+      expect(realWinner, `year ${year}`).toBe(nominalWinner);
+    }
+    expect(comparison.flipYear).toBeNull();
+
+    expect(realPie.rows[3].closingValueAfterTaxNzd).toBeCloseTo(117_213.545195, 3);
+    expect(realDirect.rows[3].closingValueAfterTaxNzd).toBeCloseTo(115_441.680321, 3);
+  });
+
+  // AC9: missing pir throws TaxInputError unwrapped — no fallback to marginalRate, no skipped PIE
+  // run (the PIE leg always runs first-class, regardless of input.wrapper).
+  it("AC9 — missing pir throws, unwrapped, no fallback", () => {
+    let thrown: unknown;
+    try {
+      compareWrappers(makeInput({ wrapper: "direct", pir: undefined }));
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(TaxInputError);
+    expect(thrown).not.toBeInstanceOf(ProjectionInputError);
+    expect((thrown as Error).message).toMatch(/pir is required/);
+  });
+
+  // AC10: only the wrapper varies (D4) — matches project() called directly, `input` is never
+  // mutated, and input.wrapper is ignored (pie vs direct on the input gives an identical output).
+  it("AC10 — only the wrapper varies (D4)", () => {
+    const input = makeFixtureF();
+    const inputClone = { ...input };
+    const comparison = compareWrappers(input);
+
+    expect(comparison.pie).toEqual(project({ ...input, wrapper: "pie" }));
+    expect(comparison.direct).toEqual(project({ ...input, wrapper: "direct" }));
+    expect(input).toEqual(inputClone);
+
+    const viaPie = compareWrappers({ ...input, wrapper: "pie" });
+    const viaDirect = compareWrappers({ ...input, wrapper: "direct" });
+    expect(viaPie).toEqual(viaDirect);
+
+    // D4/D3 with usWithholdingRate != 0 (every spec fixture above uses 0, per the "Fixtures"
+    // preamble, so none of them alone can catch a mutant that zeroes WHT on just the PIE leg —
+    // this fixture exists to close that gap; see notes.md "Mutation testing").
+    const inputWithWht = makeFixtureF({ usWithholdingRate: 0.15 });
+    const comparisonWithWht = compareWrappers(inputWithWht);
+    expect(comparisonWithWht.pie).toEqual(project({ ...inputWithWht, wrapper: "pie" }));
+    expect(comparisonWithWht.pie.rows[1].usWithholdingNzd).toBeGreaterThan(0);
+  });
+
+  // AC11: no NaN/Infinity in any numeric field of `years` or either ProjectionResult, for P, L, R, F
+  // and the termYears:1/pir:0.105 degenerate case.
+  it("AC11 — no NaN/Infinity escapes years or either ProjectionResult", () => {
+    const fixtures: ProjectionInput[] = [
+      makeFixtureP(),
+      makeFixtureL(),
+      makeFixtureR(),
+      makeFixtureF(),
+      makeInput({ termYears: 1, pir: 0.105 }),
+    ];
+    for (const fixture of fixtures) {
+      const comparison = compareWrappers(fixture);
+      assertAllFinite(comparison.pie);
+      assertAllFinite(comparison.direct);
+      for (const year of comparison.years) {
+        for (const [key, value] of Object.entries(year)) {
+          if (typeof value === "number") {
+            expect(Number.isFinite(value), `years.${key} (year ${year.year})`).toBe(true);
+          }
+        }
+      }
+      for (const [key, value] of Object.entries(comparison)) {
+        if (typeof value === "number") {
+          expect(Number.isFinite(value), `comparison.${key}`).toBe(true);
+        }
+      }
+    }
   });
 });

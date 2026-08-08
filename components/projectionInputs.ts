@@ -10,13 +10,15 @@ import {
   project,
   toRealTerms,
   findIncomeCrossover,
+  compareWrappers,
   ProjectionInputError,
   type ProjectionInput,
   type ProjectionResult,
   type RealProjectionResult,
   type IncomeCrossover,
+  type WrapperComparison,
 } from "@/lib/projection";
-import { TaxInputError, type Wrapper } from "@/lib/nzTax";
+import { TaxInputError, PIR_CAP, DEFAULT_FIF_DE_MINIMIS_NZD, type Wrapper } from "@/lib/nzTax";
 import { MissingAssumptionError, type Fund } from "@/lib/funds";
 
 export interface FieldConstraints {
@@ -72,8 +74,12 @@ export interface ProjectionFormState {
   sharePriceGrowthPercent: string;
   dividendYieldPercent: string;
   dividendGrowthPercent: string;
-  wrapper: Wrapper;
-  pirPercent: string; // only meaningful when wrapper === "pie"; ignored otherwise
+  // features/tax-mode-compare/spec.md AC12: replaces the old binary `wrapper` field so the UI's
+  // three-way control (NZ PIE / US ETFs (direct) / Compare both) has a single source of truth —
+  // "compare" still builds a `wrapper: "direct"` base ProjectionInput (below), it is not itself a
+  // valid `Wrapper` value passed to the engine.
+  taxMode: "pie" | "direct" | "compare";
+  pirPercent: string; // only meaningful when taxMode !== "direct"; ignored otherwise
   marginalRatePercent: string;
   usWithholdingPercent: string;
   platformFeePercent: string;
@@ -104,14 +110,17 @@ export type BuildProjectionInputResult =
 
 type PirParseResult = { ok: true; value: number | undefined } | { ok: false; error: string };
 
-// wrapper "direct" -> pir is always undefined, never 0 (Constitution §8) — the field is not shown
-// for direct (spec: "PIR (%) — shown only when wrapper = PIE"). A blank pir under "pie" is also
-// passed through as undefined rather than rejected here: computeAnnualTax's own "pir is required
-// when wrapper is pie" TaxInputError is the single source of truth for that cross-field rule
-// (Constitution §2) and must surface verbatim through runProjection (AC9), not be pre-empted by a
-// mapper-level message.
-function parsePir(wrapper: Wrapper, pirPercent: string): PirParseResult {
-  if (wrapper !== "pie") {
+// taxMode "direct" -> pir is always undefined, never 0 (Constitution §8) — the field is not shown
+// for direct. "pie" and "compare" both parse it (AC12): "compare"'s built ProjectionInput always
+// carries `wrapper: "direct"` (the base run), but `compareWrappers` (wired in runProjection below)
+// reads `pir` off that same input object for its own PIE leg (spec.md D4) — omitting it here would
+// silently drop the PIE half of the comparison. A blank pir under "pie"/"compare" is also passed
+// through as undefined rather than rejected here: computeAnnualTax's own "pir is required when
+// wrapper is pie" TaxInputError is the single source of truth for that cross-field rule
+// (Constitution §2) and must surface verbatim through runProjection (AC9/AC13), not be pre-empted
+// by a mapper-level message.
+function parsePir(taxMode: ProjectionFormState["taxMode"], pirPercent: string): PirParseResult {
+  if (taxMode === "direct") {
     return { ok: true, value: undefined };
   }
   const trimmed = pirPercent.trim();
@@ -227,7 +236,7 @@ export function buildProjectionInput(form: ProjectionFormState): BuildProjection
     { min: 0 }
   );
   const fxSpreadPercent = parseNumericField(form.fxSpreadPercent, "FX spread (%)");
-  const pirResult = parsePir(form.wrapper, form.pirPercent);
+  const pirResult = parsePir(form.taxMode, form.pirPercent);
   const contributionsStopYear = parseOptionalPhaseYearField(
     form.contributionsStopYear,
     "Stop contributing from year"
@@ -291,7 +300,10 @@ export function buildProjectionInput(form: ProjectionFormState): BuildProjection
     brokeragePerContributionNzd: mustParse(brokeragePerContribution),
     fxSpreadRate: mustParse(fxSpreadPercent) / 100, // /100: percent -> decimal, once
     usWithholdingRate: mustParse(usWithholdingPercent) / 100, // /100: percent -> decimal, once
-    wrapper: form.wrapper,
+    // AC12: "pie" -> wrapper "pie"; "direct"/"compare" both -> wrapper "direct" (the base run —
+    // compareWrappers, wired in runProjection below, ignores this field on both its own legs anyway,
+    // per spec.md D4).
+    wrapper: form.taxMode === "pie" ? "pie" : "direct",
     marginalRate: mustParse(marginalRatePercent) / 100, // /100: percent -> decimal, once
     pir: mustParsePir(pirResult),
     // fifThresholdNzd intentionally omitted — left at the engine default (spec: "FIF threshold
@@ -354,6 +366,10 @@ export type RunProjectionResult =
       // nominal answer to a real ("today's dollars") question is the wrong-number failure mode, so
       // the toggle being off (real undefined) means no crossover is reported either.
       crossover: IncomeCrossover | undefined;
+      // features/tax-mode-compare/spec.md AC13: only ever populated when taxMode === "compare" —
+      // "pie"/"direct" leave this undefined, the same convention `real`/`crossover` use for their
+      // own toggles above.
+      comparison: WrapperComparison | undefined;
     }
   | { ok: false; errors: string[] };
 
@@ -382,15 +398,28 @@ export function runProjection(form: ProjectionFormState): RunProjectionResult {
   }
 
   let value: ProjectionResult;
-  try {
-    value = project(built.value);
-  } catch (error) {
-    return { ok: false, errors: [formatEngineError(error)] };
+  let comparison: WrapperComparison | undefined;
+  if (form.taxMode === "compare") {
+    // AC13: a single compareWrappers() call supplies both `value` (its direct leg, byte-identical
+    // to project(built.value) since built.value.wrapper is already "direct" per AC12) and
+    // `comparison` — never a separate, redundant project() call for the base run.
+    try {
+      comparison = compareWrappers(built.value);
+    } catch (error) {
+      return { ok: false, errors: [formatEngineError(error)] };
+    }
+    value = comparison.direct;
+  } else {
+    try {
+      value = project(built.value);
+    } catch (error) {
+      return { ok: false, errors: [formatEngineError(error)] };
+    }
   }
 
   if (!form.showRealTerms) {
     // C3: no real view, so no crossover either, whatever the target field says.
-    return { ok: true, value, real: undefined, crossover: undefined };
+    return { ok: true, value, real: undefined, crossover: undefined, comparison };
   }
 
   // buildProjectionInput already returned ok:false above if inflationRatePercent failed to parse,
@@ -429,7 +458,7 @@ export function runProjection(form: ProjectionFormState): RunProjectionResult {
   // computed above, never re-running project() or toRealTerms() for the target.
   const crossover = target === undefined ? undefined : findIncomeCrossover(real, target);
 
-  return { ok: true, value, real, crossover };
+  return { ok: true, value, real, crossover, comparison };
 }
 
 // The only place a phase is turned into display text (Constitution §2 — no phase logic or string
@@ -453,4 +482,119 @@ export function formatNzd(value: number): string {
   }
   const normalised = value === 0 ? 0 : value;
   return `$${normalised.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+}
+
+// features/tax-mode-compare/spec.md D6/AC14/AC15: one explainer line, string formatting only —
+// every figure read below was already computed by project()/compareWrappers (Constitution §2, no
+// tax/fee/growth/deflator arithmetic in this function).
+function formatRegimeWord(regime: "fif" | "dividend"): string {
+  return regime === "fif" ? "FIF" : "Dividend";
+}
+
+function formatMethodWord(method: "fdr" | "cv" | "actual-dividends"): string {
+  switch (method) {
+    case "fdr":
+      return "FDR";
+    case "cv":
+      return "CV";
+    case "actual-dividends":
+      return "actual dividends";
+  }
+}
+
+// D6: "PIR (plus `capped at 28%` when the entered PIR exceeds `PIR_CAP`) or marginal" — PIR_CAP is
+// imported, never restated (Coder Guardrails), so a future PIR_CAP change updates this text too.
+function formatSingleModeRate(wrapper: Wrapper, pirPercent: string, marginalRatePercent: string): string {
+  if (wrapper === "pie") {
+    const parsed = parseNumericField(pirPercent, "PIR (%)");
+    if (!parsed.ok) {
+      return "PIR rate unavailable";
+    }
+    const pirDecimal = parsed.value / 100;
+    const cappedSuffix = pirDecimal > PIR_CAP ? ` (capped at ${(PIR_CAP * 100).toFixed(0)}%)` : "";
+    return `PIR ${(pirDecimal * 100).toFixed(1)}%${cappedSuffix}`;
+  }
+  const parsed = parseNumericField(marginalRatePercent, "Marginal tax rate (%)");
+  if (!parsed.ok) {
+    return "marginal rate unavailable";
+  }
+  return `marginal rate ${parsed.value.toFixed(1)}%`;
+}
+
+// D6: "names the first year taxRegime changes" — year 1 is described separately by the caller
+// below; this scans years 2..N for the first departure from year 1's own regime.
+function findFirstRegimeChangeYear(value: ProjectionResult): number | null {
+  const startRegime = value.rows[1]?.taxRegime;
+  if (startRegime === undefined) {
+    return null;
+  }
+  for (let i = 2; i < value.rows.length; i++) {
+    if (value.rows[i].taxRegime !== startRegime) {
+      return value.rows[i].year;
+    }
+  }
+  return null;
+}
+
+function formatSingleModeExplainer(
+  form: ProjectionFormState,
+  wrapper: Wrapper,
+  value: ProjectionResult
+): string {
+  const wrapperLabel = wrapper === "pie" ? "NZ PIE" : "US ETFs (direct)";
+  const year1 = value.rows[1];
+  const rateLabel = formatSingleModeRate(wrapper, form.pirPercent, form.marginalRatePercent);
+  // Guarded rather than trusted (invariant 13/AC15 "no NaN/undefined"): usWithholdingPercent is
+  // already validated by buildProjectionInput before runProjection can reach ok:true, so this parse
+  // cannot fail in practice — the guard exists only so this function can never itself print
+  // "undefined%" if that invariant is ever broken elsewhere.
+  const usWithholding = parseNumericField(form.usWithholdingPercent, "US withholding (%)");
+  const withholdingText = usWithholding.ok ? ` US withholding ${usWithholding.value}%.` : "";
+
+  const changeYear = findFirstRegimeChangeYear(value);
+  const changeText =
+    changeYear === null
+      ? ""
+      : ` Regime changes to ${formatRegimeWord(value.rows[changeYear].taxRegime)} in year ${changeYear}.`;
+
+  return (
+    `${wrapperLabel}: Year 1 is ${formatRegimeWord(year1.taxRegime)} (${formatMethodWord(
+      year1.taxMethod
+    )}), ${year1.aboveThreshold ? "above" : "below"} the ${formatNzd(
+      DEFAULT_FIF_DE_MINIMIS_NZD
+    )} de minimis, taxed at ${rateLabel}.${withholdingText}${changeText}`
+  );
+}
+
+// D6/AC15: both wrappers' rates, "identical inputs" (D4's own guarantee, stated so the reader does
+// not need to compare two forms), and either the never-changes lead or the flip year/wrapper — a
+// flip year already implies the lead has changed, so the two are mutually exclusive.
+function formatCompareExplainer(form: ProjectionFormState, comparison: WrapperComparison): string {
+  const pirText = formatSingleModeRate("pie", form.pirPercent, form.marginalRatePercent);
+  const marginalText = formatSingleModeRate("direct", form.pirPercent, form.marginalRatePercent);
+
+  const outcomeText =
+    comparison.flipYear !== null
+      ? `the cheaper wrapper flips to ${
+          comparison.flipWrapper === "pie" ? "NZ PIE" : "US ETFs (direct)"
+        } in year ${comparison.flipYear}`
+      : comparison.finalDifferenceNzd === 0
+        ? "the two wrappers tie throughout"
+        : `${comparison.finalDifferenceNzd > 0 ? "NZ PIE" : "US ETFs (direct)"} leads by ${formatNzd(
+            Math.abs(comparison.finalDifferenceNzd)
+          )} — the cheaper wrapper never changes`;
+
+  return `NZ PIE (${pirText}) vs US ETFs (direct) (${marginalText}), identical inputs — ${outcomeText}.`;
+}
+
+// AC14/AC15: a run.ok === false state has no computed rows to describe, so the line names no rate
+// at all (invariant 13/Constitution §1 — never print a plausible-looking number off invalid input).
+export function formatTaxModeExplainer(form: ProjectionFormState, run: RunProjectionResult): string {
+  if (!run.ok) {
+    return "Tax details are unavailable until the inputs are valid.";
+  }
+  if (form.taxMode === "compare" && run.comparison) {
+    return formatCompareExplainer(form, run.comparison);
+  }
+  return formatSingleModeExplainer(form, form.taxMode === "pie" ? "pie" : "direct", run.value);
 }

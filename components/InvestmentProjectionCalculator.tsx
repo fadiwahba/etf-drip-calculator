@@ -4,23 +4,17 @@ import React, { useMemo, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChartNoAxesCombined } from "lucide-react";
 import { getFund } from "@/lib/funds";
 import type { ProjectionRow, ProjectionResult, RealProjectionResult } from "@/lib/projection";
-import type { Wrapper } from "@/lib/nzTax";
 import {
   buildProjectionInput,
   runProjection,
   seedAssumptionsFromFund,
   formatNzd,
   formatPhase,
+  formatTaxModeExplainer,
   type ProjectionFormState,
 } from "@/components/projectionInputs";
 import type { IncomeCrossover } from "@/lib/projection";
@@ -40,7 +34,7 @@ function buildDefaultFormState(): ProjectionFormState {
     sharePriceGrowthPercent: seed.ok ? seed.sharePriceGrowthPercent.toFixed(2) : "",
     dividendYieldPercent: seed.ok ? seed.dividendYieldPercent.toFixed(2) : "",
     dividendGrowthPercent: "0",
-    wrapper: "direct",
+    taxMode: "direct",
     pirPercent: "28",
     marginalRatePercent: "33",
     usWithholdingPercent: "15",
@@ -92,9 +86,9 @@ const InvestmentProjectionCalculator = () => {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleWrapperChange = (value: string) => {
-    if (value === "pie" || value === "direct") {
-      setForm((prev) => ({ ...prev, wrapper: value as Wrapper }));
+  const handleTaxModeChange = (value: string) => {
+    if (value === "pie" || value === "direct" || value === "compare") {
+      setForm((prev) => ({ ...prev, taxMode: value }));
     }
   };
 
@@ -243,21 +237,20 @@ const InvestmentProjectionCalculator = () => {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="wrapper" className="text-slate-700 font-medium">
-                  Wrapper
-                </Label>
-                <Select value={form.wrapper} onValueChange={handleWrapperChange}>
-                  <SelectTrigger id="wrapper" className="w-full border-slate-300">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="direct">US ETF (direct)</SelectItem>
-                    <SelectItem value="pie">NZ PIE</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label className="text-slate-700 font-medium">Tax mode</Label>
+                <Tabs value={form.taxMode} onValueChange={handleTaxModeChange}>
+                  <TabsList>
+                    <TabsTrigger value="pie">NZ PIE</TabsTrigger>
+                    <TabsTrigger value="direct">US ETFs (direct)</TabsTrigger>
+                    <TabsTrigger value="compare">Compare both</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                {/* features/tax-mode-compare/spec.md D6: one-line explainer, string formatting only
+                    (Constitution §2) — every figure it reads already comes from runProjection. */}
+                <p className="text-xs text-slate-500">{formatTaxModeExplainer(form, projection)}</p>
               </div>
 
-              {form.wrapper === "pie" && (
+              {(form.taxMode === "pie" || form.taxMode === "compare") && (
                 <div className="space-y-2">
                   <Label htmlFor="pirPercent" className="text-slate-700 font-medium">
                     PIR (%)
@@ -274,20 +267,22 @@ const InvestmentProjectionCalculator = () => {
                 </div>
               )}
 
-              <div className="space-y-2">
-                <Label htmlFor="marginalRatePercent" className="text-slate-700 font-medium">
-                  Marginal tax rate (%)
-                </Label>
-                <Input
-                  id="marginalRatePercent"
-                  type="text"
-                  inputMode="decimal"
-                  value={form.marginalRatePercent}
-                  onChange={(e) => handleFieldChange("marginalRatePercent", e.target.value)}
-                  className="border-slate-300 focus:border-red-500 focus:ring-red-500"
-                />
-                <FieldError message={fieldErrors.marginalRatePercent} />
-              </div>
+              {(form.taxMode === "direct" || form.taxMode === "compare") && (
+                <div className="space-y-2">
+                  <Label htmlFor="marginalRatePercent" className="text-slate-700 font-medium">
+                    Marginal tax rate (%)
+                  </Label>
+                  <Input
+                    id="marginalRatePercent"
+                    type="text"
+                    inputMode="decimal"
+                    value={form.marginalRatePercent}
+                    onChange={(e) => handleFieldChange("marginalRatePercent", e.target.value)}
+                    className="border-slate-300 focus:border-red-500 focus:ring-red-500"
+                  />
+                  <FieldError message={fieldErrors.marginalRatePercent} />
+                </div>
+              )}
 
               <div className="space-y-2">
                 <Label htmlFor="usWithholdingPercent" className="text-slate-700 font-medium">
@@ -546,6 +541,45 @@ const InvestmentProjectionCalculator = () => {
                       </p>
                     </>
                   )}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Compare both — features/tax-mode-compare/spec.md AC16: both final values, the
+                difference and the flip year, all read straight off compareWrappers() via
+                runProjection (Constitution §2, no ranking/tax arithmetic here). */}
+            {form.taxMode === "compare" && projection.ok && projection.comparison && (
+              <Card className="bg-gradient-to-b from-amber-50 to-white border-amber-100 shadow-inner mt-6">
+                <CardContent className="p-6 text-center space-y-4">
+                  <p className="text-sm text-slate-600 font-medium">NZ PIE vs US ETFs (direct)</p>
+                  <div className="flex flex-wrap justify-center gap-8">
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-500">NZ PIE final value</p>
+                      <p className="text-2xl font-bold text-blue-700">
+                        {formatNzd(projection.comparison.pie.finalValueNzd)}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-500">US ETFs (direct) final value</p>
+                      <p className="text-2xl font-bold text-blue-700">
+                        {formatNzd(projection.comparison.direct.finalValueNzd)}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-500">Difference (PIE − direct)</p>
+                      <p className="text-2xl font-bold text-emerald-700">
+                        {formatNzd(projection.comparison.finalDifferenceNzd)}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-500">Flip year</p>
+                      <p className="text-2xl font-bold text-slate-700">
+                        {projection.comparison.flipYear === null
+                          ? "Never"
+                          : `Year ${projection.comparison.flipYear}`}
+                      </p>
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             )}

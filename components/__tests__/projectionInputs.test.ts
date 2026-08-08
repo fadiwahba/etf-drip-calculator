@@ -9,6 +9,7 @@ import {
   formatEngineError,
   formatNzd,
   formatPhase,
+  formatTaxModeExplainer,
   type ProjectionFormState,
 } from "@/components/projectionInputs";
 import { getFund, MissingAssumptionError } from "@/lib/funds";
@@ -26,7 +27,7 @@ function makeForm(overrides: Partial<ProjectionFormState> = {}): ProjectionFormS
     sharePriceGrowthPercent: "9.12",
     dividendYieldPercent: "3.25",
     dividendGrowthPercent: "0",
-    wrapper: "direct",
+    taxMode: "direct",
     pirPercent: "28",
     marginalRatePercent: "33",
     usWithholdingPercent: "15",
@@ -153,7 +154,7 @@ describe("AC5 — net basis, fixed for every form state", () => {
   });
 
   it("growthBasis and expenseRatioAnnual are unaffected by wrapper/pir overrides", () => {
-    const result = buildProjectionInput(makeForm({ wrapper: "pie", pirPercent: "10.5" }));
+    const result = buildProjectionInput(makeForm({ taxMode: "pie", pirPercent: "10.5" }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.growthBasis).toBe("net-of-expense-ratio");
@@ -163,7 +164,7 @@ describe("AC5 — net basis, fixed for every form state", () => {
 
 describe("AC6 — wrapper passthrough", () => {
   it("wrapper 'pie' yields pir as a decimal and keeps marginalRate present", () => {
-    const result = buildProjectionInput(makeForm({ wrapper: "pie", pirPercent: "28" }));
+    const result = buildProjectionInput(makeForm({ taxMode: "pie", pirPercent: "28" }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.wrapper).toBe("pie");
@@ -172,7 +173,7 @@ describe("AC6 — wrapper passthrough", () => {
   });
 
   it("wrapper 'direct' yields pir undefined, never 0", () => {
-    const result = buildProjectionInput(makeForm({ wrapper: "direct" }));
+    const result = buildProjectionInput(makeForm({ taxMode: "direct" }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.wrapper).toBe("direct");
@@ -230,7 +231,7 @@ describe("AC9 — engine errors surface verbatim through runProjection", () => {
   });
 
   it("a TaxInputError from project() (pir missing under PIE) is caught and returned, not thrown", () => {
-    const result = runProjection(makeForm({ wrapper: "pie", pirPercent: "" }));
+    const result = runProjection(makeForm({ taxMode: "pie", pirPercent: "" }));
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.errors).toHaveLength(1);
@@ -532,5 +533,172 @@ describe("crossover-target-income mapper", () => {
     expect(withoutTarget.ok).toBe(true);
     if (!withTarget.ok || !withoutTarget.ok) return;
     expect(withTarget.value).toEqual(withoutTarget.value);
+  });
+});
+
+// features/tax-mode-compare/spec.md ACs 12-15. `makeForm()`'s own defaults (100k / 15y / SCHD seed
+// 9.12%/3.25% / direct / 33% / PIR 28% / WHT 15% / inflation 3%) are the spec's "UI-default form"
+// verbatim — reused directly rather than duplicated.
+describe("tax-mode-compare mapper", () => {
+  describe("AC12 — taxMode replaces wrapper", () => {
+    it("'pie' -> wrapper 'pie' + decimal pir", () => {
+      const result = buildProjectionInput(makeForm({ taxMode: "pie", pirPercent: "28" }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.wrapper).toBe("pie");
+      expect(result.value.pir).toBeCloseTo(0.28, 10);
+    });
+
+    it("'direct' -> wrapper 'direct', pir undefined", () => {
+      const result = buildProjectionInput(makeForm({ taxMode: "direct", pirPercent: "28" }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.wrapper).toBe("direct");
+      expect(result.value.pir).toBeUndefined();
+    });
+
+    it("'compare' -> wrapper 'direct' (base run) with pir still parsed ('28' -> 0.28)", () => {
+      const result = buildProjectionInput(makeForm({ taxMode: "compare", pirPercent: "28" }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.wrapper).toBe("direct");
+      expect(result.value.pir).toBeCloseTo(0.28, 10);
+    });
+
+    it("'taxMode' is never a key of the built ProjectionInput", () => {
+      const result = buildProjectionInput(makeForm());
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect("taxMode" in result.value).toBe(false);
+    });
+  });
+
+  describe("AC13 — runProjection", () => {
+    it("'compare' -> comparison defined, comparison.direct equals value, no third project() call", () => {
+      const result = runProjection(makeForm({ taxMode: "compare" }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.comparison).toBeDefined();
+      if (!result.comparison) return;
+      expect(result.comparison.direct).toEqual(result.value);
+      expect(result.comparison.years.length).toBe(result.value.rows.length);
+    });
+
+    it("'pie'/'direct' -> comparison undefined", () => {
+      const pie = runProjection(makeForm({ taxMode: "pie" }));
+      const direct = runProjection(makeForm({ taxMode: "direct" }));
+      expect(pie.ok).toBe(true);
+      expect(direct.ok).toBe(true);
+      if (!pie.ok || !direct.ok) return;
+      expect(pie.comparison).toBeUndefined();
+      expect(direct.comparison).toBeUndefined();
+    });
+
+    it("'compare' with pirPercent '' -> ok:false carrying the unwrapped TaxInputError", () => {
+      const result = runProjection(makeForm({ taxMode: "compare", pirPercent: "" }));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toMatch(/^TaxInputError: /);
+      expect(result.errors[0]).toContain('pir is required when wrapper is "pie"');
+    });
+  });
+
+  describe("AC14 — formatTaxModeExplainer, single modes", () => {
+    it("UI-default form ('direct')", () => {
+      const form = makeForm();
+      const run = runProjection(form);
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).toContain("US ETFs (direct)");
+      expect(explainer).toContain("marginal rate 33.0%");
+      expect(explainer).toContain("Year 1");
+      expect(explainer).toContain("FIF");
+      expect(explainer).toContain("FDR");
+      expect(explainer).toContain("above");
+      expect(explainer).toContain("$50,000");
+      expect(explainer).toContain("US withholding 15%");
+    });
+
+    it("'pie' + pirPercent '28' -> NZ PIE, PIR 28.0%, not marginal", () => {
+      const form = makeForm({ taxMode: "pie", pirPercent: "28" });
+      const run = runProjection(form);
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).toContain("NZ PIE");
+      expect(explainer).toContain("PIR 28.0%");
+      expect(explainer).not.toContain("marginal");
+    });
+
+    it("'pie' + pirPercent '30' -> also capped at 28%", () => {
+      const form = makeForm({ taxMode: "pie", pirPercent: "30" });
+      const run = runProjection(form);
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).toContain("capped at 28%");
+    });
+
+    it("initialCapital '40000' + extraMonthlyContribution '500' -> below, Dividend, actual dividends, first FIF year", () => {
+      const form = makeForm({ initialCapital: "40000", extraMonthlyContribution: "500" });
+      const run = runProjection(form);
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).toContain("below");
+      expect(explainer).toContain("Dividend");
+      expect(explainer).toContain("actual dividends");
+      expect(explainer).toContain("year 2");
+    });
+
+    it("run.ok === false -> a fixed line quoting no rate", () => {
+      const form = makeForm({ sharePriceGrowthPercent: "150" });
+      const run = runProjection(form);
+      expect(run.ok).toBe(false);
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).not.toMatch(/%/);
+      expect(explainer.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("AC15 — formatTaxModeExplainer, compare mode", () => {
+    it("contains both wrappers/rates, 'identical inputs', and a lead via formatNzd (UI-default, never flips)", () => {
+      const form = makeForm({ taxMode: "compare" });
+      const run = runProjection(form);
+      const explainer = formatTaxModeExplainer(form, run);
+      expect(explainer).toContain("NZ PIE");
+      expect(explainer).toContain("US ETFs (direct)");
+      expect(explainer).toContain("PIR 28.0%");
+      expect(explainer).toContain("marginal rate 33.0%");
+      expect(explainer).toContain("identical inputs");
+      expect(explainer).toContain("never changes");
+      expect(explainer).not.toMatch(/NaN|Infinity|undefined/);
+    });
+
+    it("names the flip year and the wrapper it flips to when the comparison flips", () => {
+      // A below-then-above-de-minimis scenario, Fixture-F-shaped like
+      // lib/__tests__/projection.test.ts's own AC7: a low dividend yield keeps pie ahead while both
+      // legs are below the $50k de minimis, then pie's FDR drag (once its own cost basis crosses
+      // first) briefly costs it more than direct's still-below-threshold actual-dividend tax.
+      // Verified against the real (unmodified) runProjection() output before being pinned here —
+      // capital/yield/term were searched, not guessed, specifically so this branch is genuinely
+      // exercised rather than passing vacuously (see notes.md).
+      const form = makeForm({
+        taxMode: "compare",
+        initialCapital: "46230",
+        extraMonthlyContribution: "0",
+        dividendYieldPercent: "1",
+        pirPercent: "28",
+        marginalRatePercent: "39",
+        usWithholdingPercent: "0",
+        termYears: "10",
+      });
+      const run = runProjection(form);
+      expect(run.ok).toBe(true);
+      if (!run.ok || !run.comparison) return;
+      expect(run.comparison.flipYear).not.toBeNull();
+      expect(run.comparison.flipWrapper).toBe("direct");
+      const explainer = formatTaxModeExplainer(form, run);
+      // Pinned as one substring naming the flip wrapper right beside its year — a looser pair of
+      // checks (year present + "US ETFs (direct)" present anywhere) would pass even if the flip
+      // wrapper label were swapped, since "US ETFs (direct)" already appears earlier in the line as
+      // the wrapper's own rate label.
+      expect(explainer).toContain(`flips to US ETFs (direct) in year ${run.comparison.flipYear}`);
+      expect(explainer).not.toMatch(/NaN|Infinity|undefined/);
+    });
   });
 });

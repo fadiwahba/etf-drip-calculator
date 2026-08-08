@@ -633,3 +633,108 @@ export function findIncomeCrossover(
     finalYearNetIncomeNzd,
   };
 }
+
+// features/tax-mode-compare/spec.md D0-D6: PIE vs direct, side by side. `compareWrappers` calls
+// `project()` exactly twice (Constitution §2 — no tax, fee, growth or deflator arithmetic lives
+// here) and does no NZ tax math of its own; every number below is read off the two
+// already-validated ProjectionResults.
+export const WRAPPER_TIE_EPSILON_NZD = 1e-6; // float64 drift only, never a real decision (invariant 15)
+
+export interface WrapperComparisonYear {
+  year: number;
+  pieClosingValueAfterTaxNzd: number;
+  directClosingValueAfterTaxNzd: number;
+  differenceNzd: number; // pie − direct, signed
+  cheaperWrapper: Wrapper | null; // null === tie
+}
+
+export interface WrapperComparison {
+  pie: ProjectionResult;
+  direct: ProjectionResult;
+  years: WrapperComparisonYear[]; // index === year; [0] is the shared pre-growth snapshot, always a tie
+  firstDecisiveYear: number | null;
+  firstDecisiveWrapper: Wrapper | null;
+  flipYear: number | null;
+  flipWrapper: Wrapper | null;
+  finalDifferenceNzd: number;
+  pieTotalTaxNzd: number;
+  directTotalTaxNzd: number;
+}
+
+// D1: "cheaper" ranks closingValueAfterTaxNzd (the bigger after-tax pile), never totalTaxNzd — the
+// lower-taxed wrapper keeps more shares, which grows its own FDR base, so its annual tax bill can
+// overtake the other wrapper's while its balance is still ahead (spec.md D1, Fixture P). This is
+// exactly why `pieTotalTaxNzd`/`directTotalTaxNzd` are reported below but never ranked on.
+export function compareWrappers(input: ProjectionInput): WrapperComparison {
+  // D4: input.wrapper is ignored — the spread below overrides it on both legs from the same
+  // `input` object, so every other field (growth, fees, FX, WHT, phases, pir, marginalRate,
+  // fifThresholdNzd) is byte-identical on both runs by construction, and `input` itself is never
+  // mutated (a fresh object is spread each time, not edited in place).
+  const pie = project({ ...input, wrapper: "pie" });
+  const direct = project({ ...input, wrapper: "direct" });
+
+  const years: WrapperComparisonYear[] = pie.rows.map((pieRow, index) => {
+    const directRow = direct.rows[index];
+    const differenceNzd = pieRow.closingValueAfterTaxNzd - directRow.closingValueAfterTaxNzd;
+    // D2: an exact epsilon tie is null, never coerced to a wrapper — the epsilon exists solely to
+    // absorb float64 drift between two structurally-equal runs (e.g. Fixture E, both rates 0.28),
+    // not to decide a genuinely close year.
+    const cheaperWrapper: Wrapper | null =
+      Math.abs(differenceNzd) <= WRAPPER_TIE_EPSILON_NZD ? null : differenceNzd > 0 ? "pie" : "direct";
+    return {
+      year: pieRow.year,
+      pieClosingValueAfterTaxNzd: pieRow.closingValueAfterTaxNzd,
+      directClosingValueAfterTaxNzd: directRow.closingValueAfterTaxNzd,
+      differenceNzd,
+      cheaperWrapper,
+    };
+  });
+
+  // D2: firstDecisiveYear is the smallest y in [1,N] that is not a tie — year 0 (the shared
+  // pre-growth snapshot, always a tie) is excluded by starting the scan at index 1.
+  let firstDecisiveYear: number | null = null;
+  let firstDecisiveWrapper: Wrapper | null = null;
+  for (let i = 1; i < years.length; i++) {
+    if (years[i].cheaperWrapper !== null) {
+      firstDecisiveYear = years[i].year;
+      firstDecisiveWrapper = years[i].cheaperWrapper;
+      break;
+    }
+  }
+
+  // D2: flipYear is the smallest LATER non-tie year with a winner different from
+  // firstDecisiveWrapper — leaving a tie is never a flip, and only the first flip is reported (a
+  // later reversal, e.g. Fixture F's year 4, is deliberately not surfaced here). Years before
+  // firstDecisiveYear are ties by definition (that is what makes firstDecisiveYear the *first*
+  // decisive year), so scanning from index 1 rather than from firstDecisiveYear cannot pick up a
+  // spurious earlier flip.
+  let flipYear: number | null = null;
+  let flipWrapper: Wrapper | null = null;
+  if (firstDecisiveWrapper !== null) {
+    for (let i = 1; i < years.length; i++) {
+      const winner = years[i].cheaperWrapper;
+      if (winner !== null && winner !== firstDecisiveWrapper) {
+        flipYear = years[i].year;
+        flipWrapper = winner;
+        break;
+      }
+    }
+  }
+
+  const lastYear = years[years.length - 1];
+
+  return {
+    pie,
+    direct,
+    years,
+    firstDecisiveYear,
+    firstDecisiveWrapper,
+    flipYear,
+    flipWrapper,
+    finalDifferenceNzd: lastYear.differenceNzd,
+    // D1: the tax answer, reported without ranking on it — project()'s own totalTaxNzd summaries,
+    // never re-summed here (Constitution §2).
+    pieTotalTaxNzd: pie.totalTaxNzd,
+    directTotalTaxNzd: direct.totalTaxNzd,
+  };
+}
