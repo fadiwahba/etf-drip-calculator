@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Card,
   CardHeader,
@@ -62,15 +62,15 @@ interface KeyMetrics {
 export default function RetirementAnalysis() {
   // Property inputs - Fixed to match backstory
   const [housePrice, setHousePrice] = useState(1130000);
-  const [depositPct, setDepositPct] = useState(10);
-  const [loanTerm, setLoanTerm] = useState(30);
+  const [depositPct] = useState(10);
+  const [loanTerm] = useState(30);
   const [mortgageRate, setMortgageRate] = useState(6.0);
   const [purchaseYear] = useState(2023); // Fixed to April 2023
-  const [currentMortgageBalance] = useState(994712); // Current balance as of today
+  // const [currentMortgageBalance] = useState(994712); // Current balance as of today - unused
 
   // Investment inputs - Fixed to match backstory
   const [invTerm, setInvTerm] = useState(15);
-  const [grossCAGR] = useState(18); // Gross return before taxes/fees
+  // const [grossCAGR] = useState(18); // Gross return before taxes/fees - unused
   const [netCAGR] = useState(15); // After FIF tax (1.65%) and fees
   const [monthlyContrib, setMonthlyContrib] = useState(1000);
   const [propGrowthRate] = useState(4.5); // Auckland property growth rate
@@ -98,7 +98,7 @@ export default function RetirementAnalysis() {
     return (principal * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
   };
 
-  const calculateRemainingBalance = (
+  const calculateRemainingBalance = useCallback((
     originalPrincipal: number,
     rate: number,
     termYears: number,
@@ -120,7 +120,7 @@ export default function RetirementAnalysis() {
         monthlyRate;
 
     return Math.max(0, remainingBalance);
-  };
+  }, []);
 
   useEffect(() => {
     const currentYear = new Date().getFullYear();
@@ -201,7 +201,7 @@ export default function RetirementAnalysis() {
 
     for (let i = 1; i <= invTerm; i++) {
       const year = currentYear + i;
-      const isExtractionYear = year === extractionYear;
+      // const isExtractionYear = year === extractionYear; // unused variable
       const hasEquityLoan = year >= extractionYear && extractionYear > 0;
 
       const equityPayment = hasEquityLoan ? equityMonthlyPayment : 0;
@@ -267,7 +267,7 @@ export default function RetirementAnalysis() {
       extractionYear: extractionYear,
       meetsTarget: finalIncome >= 80000,
     });
-  }, [housePrice, depositPct, loanTerm, mortgageRate, invTerm, monthlyContrib]);
+  }, [housePrice, depositPct, loanTerm, mortgageRate, invTerm, monthlyContrib, calculateRemainingBalance, netCAGR, propGrowthRate, purchaseYear]);
 
   const formatCurrency = (val: number) =>
     new Intl.NumberFormat("en-NZ", {
@@ -284,7 +284,7 @@ export default function RetirementAnalysis() {
           <CardHeader>
             <CardTitle className="text-3xl font-bold flex items-center gap-2">
               <Home className="h-8 w-8" />
-              John's NZ Retirement Strategy
+              John&apos;s NZ Retirement Strategy
             </CardTitle>
             <CardDescription className="text-blue-100 text-lg">
               Property Equity → ETF Portfolio (Target: $80k annual income)

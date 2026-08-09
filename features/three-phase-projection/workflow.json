@@ -1,0 +1,22 @@
+{
+  "created_at": "2026-08-07T23:05:11Z",
+  "history": [
+    {
+      "at": "2026-08-07T23:11:51Z",
+      "from": "specifying",
+      "to": "implementing"
+    },
+    {
+      "at": "2026-08-07T23:51:48Z",
+      "from": "implementing",
+      "to": "reviewing"
+    },
+    {
+      "at": "2026-08-08T00:01:18Z",
+      "from": "reviewing",
+      "to": "closed"
+    }
+  ],
+  "phase": "closed",
+  "updated_at": "2026-08-08T00:01:18Z"
+}

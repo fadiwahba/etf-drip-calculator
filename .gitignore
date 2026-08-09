@@ -39,3 +39,26 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# --- lean-spec ---
+features/*/evidence/
+features/*/.workflow*
+.lean-spec/.auto*
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+build/
+coverage/
+.next/
+out/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
