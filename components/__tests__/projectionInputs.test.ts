@@ -11,9 +11,12 @@ import {
   formatPhase,
   formatTaxModeExplainer,
   formatRegimeCell,
+  applyFieldChange,
+  dividendGrowthHelperText,
+  formatFinalEffectiveYield,
   type ProjectionFormState,
 } from "@/components/projectionInputs";
-import { getFund, MissingAssumptionError } from "@/lib/funds";
+import { getFund, MissingAssumptionError, type Fund } from "@/lib/funds";
 
 // A fully valid form matching the spec's stated defaults (100k / 15y / SCHD seed / direct / 33% /
 // 15% WHT) — every AC2-AC9 test starts from this and overrides only what it needs to isolate.
@@ -28,6 +31,10 @@ function makeForm(overrides: Partial<ProjectionFormState> = {}): ProjectionFormS
     sharePriceGrowthPercent: "9.12",
     dividendYieldPercent: "3.25",
     dividendGrowthPercent: "0",
+    // features/sourced-dividend-growth/spec.md Coder Guardrails: added here mirroring the
+    // showRealTerms/targetAnnualIncome disclosures above -- dividendGrowthPercent "0" stays 0, so
+    // no pre-existing AC's behaviour changes.
+    dividendGrowthLinked: true,
     taxMode: "direct",
     pirPercent: "28",
     marginalRatePercent: "33",
@@ -794,6 +801,260 @@ describe("tax-mode-compare mapper", () => {
       if (!run.ok) return;
       const explainer = formatTaxModeExplainer(form, run);
       expect(explainer).toContain(`US ETFs (direct) leads by ${formatNzd(1_866.5430328125)}`);
+    });
+  });
+});
+
+// features/sourced-dividend-growth/spec.md. Replaces the shipped `dividendGrowthPercent: "0"`
+// default with constant yield (dividend growth = share price growth), a stated modelling
+// convention (Constitution §6/§6a), never a re-derived per-fund CAGR (Out of Scope).
+describe("sourced-dividend-growth mapper", () => {
+  describe("SDG-AC1 — the seed carries constant yield (SCHD)", () => {
+    it("dividendGrowthPercent is strictly === sharePriceGrowthPercent and toFixed(2) is '9.12'", () => {
+      const seed = seedAssumptionsFromFund(getFund("SCHD"));
+      expect(seed.ok).toBe(true);
+      if (!seed.ok) return;
+      // Field-to-field equality (never `=== 9.12`, a float literal) per spec.md AC1.
+      expect(seed.dividendGrowthPercent).toBe(seed.sharePriceGrowthPercent);
+      expect(seed.dividendGrowthPercent.toFixed(2)).toBe("9.12");
+      expect(seed.dividendGrowthPercent).not.toBe(0);
+    });
+  });
+
+  describe("SDG-AC2 — unsourceable stays blank, never 0 (VYMI)", () => {
+    it("dividendGrowthPercent is '' beside sharePriceGrowthPercent '', ok:false", () => {
+      const seed = seedAssumptionsFromFund(getFund("VYMI"));
+      expect(seed.ok).toBe(false);
+      if (seed.ok) return;
+      expect(seed.sharePriceGrowthPercent).toBe("");
+      expect(seed.dividendGrowthPercent).toBe("");
+      expect(Object.is(seed.dividendGrowthPercent, 0)).toBe(false);
+    });
+  });
+
+  describe("SDG-AC3 — the seed ignores fund.dividendGrowth", () => {
+    it("a Fund literal with sharePriceGrowth 0.07 and dividendGrowth 0.05 seeds 7.00, not 5.00", () => {
+      const fund: Fund = {
+        ticker: "TEST",
+        name: "Test Fund",
+        domicile: "US",
+        currency: "USD",
+        asOf: "2026-01-01",
+        source: "https://example.com",
+        expenseRatio: 0.001,
+        totalReturnAnnualised: 0.09,
+        totalReturnWindowYears: 10,
+        dividendYield: 0.02,
+        dividendGrowth: 0.05,
+        notes: null,
+        sharePriceGrowth: 0.07,
+      };
+      const seed = seedAssumptionsFromFund(fund);
+      expect(seed.ok).toBe(true);
+      if (!seed.ok) return;
+      expect(seed.dividendGrowthPercent.toFixed(2)).toBe("7.00");
+    });
+  });
+
+  describe("SDG-AC4 — a linked edit to share price growth carries", () => {
+    it("carries the new value onto dividendGrowthPercent, keeps dividendGrowthLinked true, returns a new object", () => {
+      const form = makeForm({
+        sharePriceGrowthPercent: "9.12",
+        dividendGrowthPercent: "9.12",
+        dividendGrowthLinked: true,
+      });
+      const next = applyFieldChange(form, "sharePriceGrowthPercent", "5");
+      expect(next.sharePriceGrowthPercent).toBe("5");
+      // "5", never a value that happens to equal 9.12 (Coder Guardrails mutation-resistance note).
+      expect(next.dividendGrowthPercent).toBe("5");
+      expect(next.dividendGrowthLinked).toBe(true);
+      expect(next).not.toBe(form);
+      // The input form itself must not be mutated.
+      expect(form.sharePriceGrowthPercent).toBe("9.12");
+      expect(form.dividendGrowthPercent).toBe("9.12");
+    });
+  });
+
+  describe("SDG-AC5 — the first dividend-growth edit breaks the link permanently, a typed 0 survives", () => {
+    const linkedForm = makeForm({
+      sharePriceGrowthPercent: "9.12",
+      dividendGrowthPercent: "9.12",
+      dividendGrowthLinked: true,
+    });
+
+    it("(a) editing dividendGrowthPercent to '0' unlinks", () => {
+      const next = applyFieldChange(linkedForm, "dividendGrowthPercent", "0");
+      expect(next.dividendGrowthPercent).toBe("0");
+      expect(next.dividendGrowthLinked).toBe(false);
+    });
+
+    it("(b) a later share-price edit leaves the typed 0 alone -- not '5', not '9.12', not ''", () => {
+      const unlinked = applyFieldChange(linkedForm, "dividendGrowthPercent", "0");
+      const after = applyFieldChange(unlinked, "sharePriceGrowthPercent", "5");
+      expect(after.dividendGrowthPercent).toBe("0");
+      expect(after.dividendGrowthPercent).not.toBe("5");
+      expect(after.dividendGrowthPercent).not.toBe("9.12");
+      expect(after.dividendGrowthPercent).not.toBe("");
+    });
+
+    it("(c) buildProjectionInput of (b)'s form gives dividendGrowth 0 and sharePriceGrowth 0.05 -- a typed zero reaches the engine as zero", () => {
+      const unlinked = applyFieldChange(linkedForm, "dividendGrowthPercent", "0");
+      const after = applyFieldChange(unlinked, "sharePriceGrowthPercent", "5");
+      const result = buildProjectionInput(after);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.dividendGrowth).toBe(0);
+      expect(result.value.sharePriceGrowth).toBeCloseTo(0.05, 10);
+    });
+  });
+
+  describe("SDG-AC6 — unrelated edits touch nothing else", () => {
+    it("editing initialCapital changes only initialCapital", () => {
+      const form = makeForm({
+        sharePriceGrowthPercent: "9.12",
+        dividendGrowthPercent: "9.12",
+        dividendGrowthLinked: true,
+      });
+      const next = applyFieldChange(form, "initialCapital", "250000");
+      expect(next.initialCapital).toBe("250000");
+      expect(next.dividendGrowthPercent).toBe("9.12");
+      expect(next.sharePriceGrowthPercent).toBe("9.12");
+      expect(next.dividendGrowthLinked).toBe(true);
+    });
+  });
+
+  describe("SDG-AC7 — the label names the convention, per state", () => {
+    it("linked", () => {
+      const form = makeForm({ dividendGrowthLinked: true });
+      expect(dividendGrowthHelperText(form)).toBe(
+        "Tracks share price growth — constant yield. A stated modelling convention, not a sourced figure. Edit it to set your own."
+      );
+    });
+
+    it("unlinked", () => {
+      const form = makeForm({ dividendGrowthLinked: false });
+      expect(dividendGrowthHelperText(form)).toBe(
+        "Your own figure — no longer tracking share price growth, so the constant-yield convention no longer holds."
+      );
+    });
+
+    // Neither string claims a source (spec.md AC7) -- the linked string's own "not a sourced
+    // figure" is a disclaimer, not a claim, so this checks for the deleted "No fund publishes..."
+    // sentence and a bare source citation, not the substring "source" itself.
+    it("the deleted 'No fund publishes a multi-year per-share dividend CAGR' sentence is gone", () => {
+      expect(dividendGrowthHelperText(makeForm({ dividendGrowthLinked: true }))).not.toMatch(
+        /No fund publishes|CAGR/i
+      );
+      expect(dividendGrowthHelperText(makeForm({ dividendGrowthLinked: false }))).not.toMatch(
+        /No fund publishes|CAGR/i
+      );
+    });
+  });
+
+  describe("SDG-AC8 — blank still errors; the flag never reaches the engine", () => {
+    it("a blank dividendGrowthPercent still errors naming the field (invariant 14, pre-existing)", () => {
+      const result = buildProjectionInput(makeForm({ dividendGrowthPercent: "" }));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.dividendGrowthPercent).toContain("Dividend growth (%)");
+    });
+
+    it("'dividendGrowthLinked' is never a key of the built ProjectionInput", () => {
+      const result = buildProjectionInput(makeForm());
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect("dividendGrowthLinked" in result.value).toBe(false);
+    });
+  });
+
+  // AC9's trigger scenario, the audit's headline reproduction case (also AC10's before/after table):
+  // 100000 initial (makeForm default) · 30y · 1000/mo · 9.12% growth · 3.25% yield (makeForm
+  // default) · direct (makeForm default) · 33% marginal (makeForm default) · 15% WHT (makeForm
+  // default) · stop 15 · draw 16 · 3% inflation (makeForm default) · real terms on (makeForm
+  // default) · target 60000.
+  function triggerForm(dividendGrowthPercent: string) {
+    return makeForm({
+      termYears: "30",
+      extraMonthlyContribution: "1000",
+      dividendGrowthPercent,
+      contributionsStopYear: "15",
+      drawdownStartYear: "16",
+      targetAnnualIncome: "60000",
+    });
+  }
+
+  describe("SDG-AC9 — final-year effective yield", () => {
+    it("(a) dividendGrowthPercent '9.12' -> '3.25%', raw ratio 0.0325 within 1e-12 (constant by construction)", () => {
+      const run = runProjection(triggerForm("9.12"));
+      expect(run.ok).toBe(true);
+      if (!run.ok || !run.real) return;
+      const last = run.real.rows[run.real.rows.length - 1];
+      const rawRatio = last.dividendPerShareNzd / last.closingSharePriceNzd;
+      expect(Math.abs(rawRatio - 0.0325)).toBeLessThan(1e-12);
+      expect(formatFinalEffectiveYield(run.real)).toBe("3.25%");
+    });
+
+    it("(b) dividendGrowthPercent '0' -> '0.24%' (0.0325 / 1.0912^30 = 0.2370%)", () => {
+      const run = runProjection(triggerForm("0"));
+      expect(run.ok).toBe(true);
+      if (!run.ok || !run.real) return;
+      expect(formatFinalEffectiveYield(run.real)).toBe("0.24%");
+    });
+
+    it("(c) the string is identical for run.value and run.real -- both deflators cancel in the ratio", () => {
+      const run = runProjection(triggerForm("9.12"));
+      expect(run.ok).toBe(true);
+      if (!run.ok || !run.real) return;
+      expect(formatFinalEffectiveYield(run.value)).toBe(formatFinalEffectiveYield(run.real));
+    });
+
+    it("(d) empty rows, or a final row with closing price 0 or non-finite, returns '—', never NaN%", () => {
+      expect(formatFinalEffectiveYield({ rows: [] })).toBe("—");
+
+      const run = runProjection(triggerForm("9.12"));
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      const zeroPriceRows = run.value.rows.map((row, index, arr) =>
+        index === arr.length - 1 ? { ...row, closingSharePriceNzd: 0 } : row
+      );
+      expect(formatFinalEffectiveYield({ rows: zeroPriceRows })).toBe("—");
+
+      const infiniteRatioRows = run.value.rows.map((row, index, arr) =>
+        index === arr.length - 1
+          ? { ...row, closingSharePriceNzd: Number.POSITIVE_INFINITY }
+          : row
+      );
+      expect(formatFinalEffectiveYield({ rows: infiniteRatioRows })).toBe("—");
+      expect(formatFinalEffectiveYield({ rows: infiniteRatioRows })).not.toMatch(/NaN/);
+    });
+  });
+
+  // AC10: before/after on the audit's trigger scenario, through runProjection end-to-end (not
+  // lib/projection.ts directly) -- asserted from the engine's own output, ±$1 tolerance, per
+  // spec.md. Reproduced independently against the unmodified engine before being pinned here (see
+  // notes.md "Verify the numbers yourself") -- both columns and both AC9 yields matched exactly on
+  // the first run, so no blocker was raised.
+  describe("SDG-AC10 — before/after on the audit's trigger scenario", () => {
+    it("dividendGrowthPercent '0' (old default): grossDividends 2204, drawn 38989, netIncome -11859, no crossover", () => {
+      const run = runProjection(triggerForm("0"));
+      expect(run.ok).toBe(true);
+      if (!run.ok || !run.real || !run.crossover) return;
+      const last = run.real.rows[run.real.rows.length - 1];
+      expect(last.grossDividendsNzd).toBeCloseTo(2204, 0);
+      expect(run.real.totalDividendsDrawnNzd).toBeCloseTo(38989, 0);
+      expect(run.crossover.finalYearNetIncomeNzd).toBeCloseTo(-11859, 0);
+      expect(run.crossover.crossoverYear).toBeNull();
+    });
+
+    it("dividendGrowthPercent '9.12' (new default): grossDividends 39241, drawn 366579, netIncome +20984, still no crossover", () => {
+      const run = runProjection(triggerForm("9.12"));
+      expect(run.ok).toBe(true);
+      if (!run.ok || !run.real || !run.crossover) return;
+      const last = run.real.rows[run.real.rows.length - 1];
+      expect(last.grossDividendsNzd).toBeCloseTo(39241, 0);
+      expect(run.real.totalDividendsDrawnNzd).toBeCloseTo(366579, 0);
+      expect(run.crossover.finalYearNetIncomeNzd).toBeCloseTo(20984, 0);
+      expect(run.crossover.crossoverYear).toBeNull();
     });
   });
 });

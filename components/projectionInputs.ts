@@ -75,6 +75,11 @@ export interface ProjectionFormState {
   sharePriceGrowthPercent: string;
   dividendYieldPercent: string;
   dividendGrowthPercent: string;
+  // features/sourced-dividend-growth/spec.md decision 2: dividendGrowthPercent tracks
+  // sharePriceGrowthPercent (constant yield, seeded true) until the user's first edit of the
+  // dividend-growth field itself, which breaks the link for good -- applyFieldChange below is the
+  // one place this flag is ever flipped (Constitution §2, no per-component linking logic).
+  dividendGrowthLinked: boolean;
   // features/tax-mode-compare/spec.md AC12: replaces the old binary `wrapper` field so the UI's
   // three-way control (NZ PIE / US ETFs (direct) / Compare both) has a single source of truth —
   // "compare" still builds a `wrapper: "direct"` base ProjectionInput (below), it is not itself a
@@ -321,6 +326,10 @@ export type SeededAssumption = {
   ticker: string;
   sharePriceGrowthPercent: number;
   dividendYieldPercent: number;
+  // features/sourced-dividend-growth/spec.md AC1/AC3: the constant-yield convention -- always the
+  // SAME value as sharePriceGrowthPercent (never `fund.dividendGrowth`, which stays a nullable,
+  // unverified measurement per data/funds.json's own module comment).
+  dividendGrowthPercent: number;
   asOf: string;
   source: string;
 };
@@ -329,6 +338,7 @@ export type UnavailableAssumption = {
   ok: false;
   ticker: string;
   sharePriceGrowthPercent: "";
+  dividendGrowthPercent: "";
   message: string;
 };
 
@@ -343,19 +353,72 @@ export function seedAssumptionsFromFund(fund: Fund): SeedAssumptionResult {
       ok: false,
       ticker: fund.ticker,
       sharePriceGrowthPercent: "",
+      dividendGrowthPercent: "",
       message: `${fund.ticker}: sharePriceGrowth is unpublished for this fund -- cannot seed a growth assumption`,
     };
   }
+  // *100 mirrors the /100 conversions above, in reverse: the fund table stores a decimal, the
+  // form field is percent-entry.
+  const sharePriceGrowthPercent = fund.sharePriceGrowth * 100;
   return {
     ok: true,
     ticker: fund.ticker,
-    // *100 mirrors the /100 conversions above, in reverse: the fund table stores a decimal, the
-    // form field is percent-entry.
-    sharePriceGrowthPercent: fund.sharePriceGrowth * 100,
+    sharePriceGrowthPercent,
     dividendYieldPercent: fund.dividendYield * 100,
+    // AC1/AC3 (docs/PRD.md "Dividend growth defaults to constant yield"): the SAME computed value
+    // as sharePriceGrowthPercent, assigned rather than re-derived so the two stay `===` -- never
+    // `fund.dividendGrowth`, which is out of scope and stays null-only data (Constitution §6/§6a).
+    dividendGrowthPercent: sharePriceGrowthPercent,
     asOf: fund.asOf,
     source: fund.source,
   };
+}
+
+// features/sourced-dividend-growth/spec.md decision 2 / Coder Guardrails: the ONLY place the
+// share-price <-> dividend-growth link is applied or broken (Constitution §2 — no per-component
+// linking logic in the .tsx). `handleFieldChange` there becomes a one-line delegate to this.
+//
+// "dividendGrowthLinked" widens into this field type only because Exclude removes just
+// "taxMode"/"showRealTerms" (Coder Guardrails' literal type) — no text input ever calls this with
+// that field (no reset control, spec.md Out of Scope), so it is handled as a safe no-op below
+// rather than reached at runtime.
+export function applyFieldChange(
+  form: ProjectionFormState,
+  field: Exclude<keyof ProjectionFormState, "taxMode" | "showRealTerms">,
+  value: string
+): ProjectionFormState {
+  if (field === "dividendGrowthLinked") {
+    return form;
+  }
+
+  const next: ProjectionFormState = { ...form, [field]: value };
+
+  // AC4: while linked, a share-price edit carries VERBATIM onto dividendGrowthPercent, even an
+  // invalid string (Coder Guardrails "one typo then raises an error on both fields" — while linked
+  // the two rates are one claim). Read off `next.sharePriceGrowthPercent`, not the raw `value`
+  // parameter, so this stays sound without a cast: `next` is already typed `ProjectionFormState`.
+  if (field === "sharePriceGrowthPercent" && next.dividendGrowthLinked) {
+    next.dividendGrowthPercent = next.sharePriceGrowthPercent;
+  }
+
+  // AC5: the FIRST edit of dividendGrowthPercent itself breaks the link for good — unconditional,
+  // so a later share-price edit can never silently re-overwrite a user-typed value again.
+  if (field === "dividendGrowthPercent") {
+    next.dividendGrowthLinked = false;
+  }
+
+  return next;
+}
+
+// features/sourced-dividend-growth/spec.md AC7: the only place the dividend-growth field's helper
+// text is composed (Constitution §2) — replaces the old "No fund publishes a multi-year per-share
+// dividend CAGR" sentence, which is now false (the default is derived, not silently 0). Neither
+// string below claims a source; both name the convention plainly (Constitution §6a "a default is
+// a claim").
+export function dividendGrowthHelperText(form: ProjectionFormState): string {
+  return form.dividendGrowthLinked
+    ? "Tracks share price growth — constant yield. A stated modelling convention, not a sourced figure. Edit it to set your own."
+    : "Your own figure — no longer tracking share price growth, so the constant-yield convention no longer holds.";
 }
 
 export type RunProjectionResult =
@@ -621,6 +684,29 @@ export function formatTaxModeExplainer(form: ProjectionFormState, run: RunProjec
 // now conditional on the row's own `aboveThreshold` fact. Direct rows (always `aboveThreshold: true`
 // whenever they reach the fif regime, since the de minimis gates them into it) render byte-identical
 // to before.
+// features/sourced-dividend-growth/spec.md AC9: the audit's core visible lesson — whenever
+// dividendGrowth diverges from sharePriceGrowth, the yield drifts, and this is the one place that
+// drift is ever shown. Reads `dividendPerShareNzd / closingSharePriceNzd` off the last row and does
+// no other arithmetic (Constitution §2/§6). `Pick<ProjectionResult, "rows">`, the same structural
+// pattern `formatRegimeCell` above uses, so a nominal `ProjectionResult` or a `RealProjectionResult`
+// (whose `rows: RealProjectionRow[]` extends `ProjectionRow[]`) both satisfy it — the ratio is
+// identical either way (AC9(c): both deflators are the same power of (1+i) and cancel).
+export function formatFinalEffectiveYield(result: Pick<ProjectionResult, "rows">): string {
+  const rows = result.rows;
+  if (rows.length === 0) {
+    return "—";
+  }
+  const lastRow = rows[rows.length - 1];
+  if (!Number.isFinite(lastRow.closingSharePriceNzd) || lastRow.closingSharePriceNzd === 0) {
+    return "—";
+  }
+  const ratio = lastRow.dividendPerShareNzd / lastRow.closingSharePriceNzd;
+  if (!Number.isFinite(ratio)) {
+    return "—";
+  }
+  return `${(ratio * 100).toFixed(2)}%`;
+}
+
 export function formatRegimeCell(
   row: Pick<ProjectionRow, "taxRegime" | "taxMethod" | "aboveThreshold">
 ): string {

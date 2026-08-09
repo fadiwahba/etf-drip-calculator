@@ -12,6 +12,9 @@ import {
   buildProjectionInput,
   runProjection,
   seedAssumptionsFromFund,
+  applyFieldChange,
+  dividendGrowthHelperText,
+  formatFinalEffectiveYield,
   formatNzd,
   formatPhase,
   formatTaxModeExplainer,
@@ -34,7 +37,11 @@ function buildDefaultFormState(): ProjectionFormState {
     // .toFixed(2) is display formatting only, not a projection/tax calculation.
     sharePriceGrowthPercent: seed.ok ? seed.sharePriceGrowthPercent.toFixed(2) : "",
     dividendYieldPercent: seed.ok ? seed.dividendYieldPercent.toFixed(2) : "",
-    dividendGrowthPercent: "0",
+    // features/sourced-dividend-growth/spec.md AC1: constant yield -- the SAME seeded value as
+    // sharePriceGrowthPercent above, not a re-derived figure. Starts linked (decision 2): tracks
+    // share price growth until the user's first edit of this field.
+    dividendGrowthPercent: seed.ok ? seed.dividendGrowthPercent.toFixed(2) : "",
+    dividendGrowthLinked: true,
     taxMode: "direct",
     pirPercent: "28",
     marginalRatePercent: "33",
@@ -73,8 +80,13 @@ const InvestmentProjectionCalculator = () => {
   const [form, setForm] = useState<ProjectionFormState>(buildDefaultFormState);
   const schdSeed = useMemo(() => seedAssumptionsFromFund(getFund("SCHD")), []);
 
-  const handleFieldChange = (field: keyof ProjectionFormState, value: string) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
+  // features/sourced-dividend-growth/spec.md Coder Guardrails: all linking logic lives in
+  // applyFieldChange (Constitution §2) -- this is a one-line delegate, not a second implementation.
+  const handleFieldChange = (
+    field: Exclude<keyof ProjectionFormState, "taxMode" | "showRealTerms">,
+    value: string
+  ) => {
+    setForm((prev) => applyFieldChange(prev, field, value));
   };
 
   const handleTaxModeChange = (value: string) => {
@@ -221,10 +233,7 @@ const InvestmentProjectionCalculator = () => {
                   className="border-slate-300 focus:border-emerald-500 focus:ring-emerald-500"
                 />
                 <FieldError message={fieldErrors.dividendGrowthPercent} />
-                <p className="text-xs text-slate-500">
-                  No fund publishes a multi-year per-share dividend CAGR — 0 is a stated
-                  assumption, not a sourced figure.
-                </p>
+                <p className="text-xs text-slate-500">{dividendGrowthHelperText(form)}</p>
               </div>
 
               <div className="space-y-2">
@@ -455,6 +464,17 @@ const InvestmentProjectionCalculator = () => {
                         {formatNzd(
                           displayResult.rows[displayResult.rows.length - 1].grossDividendsNzd
                         )}
+                      </p>
+                    </div>
+                    <div className="text-center space-y-4">
+                      {/* features/sourced-dividend-growth/spec.md AC9: the audit's core lesson made
+                          visible -- whenever dividendGrowthPercent diverges from
+                          sharePriceGrowthPercent, this ratio drifts away from the entered yield. */}
+                      <p className="text-sm text-slate-600 font-medium mb-1">
+                        Final-year effective yield
+                      </p>
+                      <p className="text-3xl font-bold text-blue-700">
+                        {formatFinalEffectiveYield(displayResult)}
                       </p>
                     </div>
                     <div className="text-center space-y-4">
