@@ -35,7 +35,8 @@ export interface TaxYearResult {
   grossTaxNzd: number;
   foreignTaxCreditNzd: number;
   nzTaxPayableNzd: number; // grossTax − credit, floored at 0
-  totalTaxNzd: number; // nzTaxPayable + usWithholdingPaid (the credit caps at the liability, not at what was paid)
+  totalTaxNzd: number; // nzTaxPayable + usWithholdingPaid. The credit is min(WHT paid, NZ liability),
+  // so it caps at BOTH: it cannot exceed the NZ bill, and cannot exceed what the US actually took.
 }
 
 export class TaxInputError extends Error {

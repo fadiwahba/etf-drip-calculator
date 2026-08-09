@@ -23,9 +23,11 @@ Path alias `@/*` → project root. Shared types in root `types.ts`.
    construction for a foreign holding above the threshold, whatever rate is used.
 6. **Price return = total return − dividend yield**, derived in one place. Never add a yield on top of
    a total return. Long-run assumptions use the **10-year CAGR**, never trailing 1-year. **Dividend
-   growth is sourced too** — the 10-year per-share distribution CAGR from the issuer's own history.
-   A `0` default is rejected: beside real price growth it collapses the effective yield and swings the
-   headline answer ~18×. Unsourceable means `null` and say so, never a quiet `0`.
+   growth defaults to constant yield** — it tracks `sharePriceGrowth` and is labelled a *stated
+   convention, not a measurement* (2026-08-09; a sourced CAGR was tried and abandoned because two
+   sources over the same window differ by 4.5pp — see `docs/PRD.md` Constraints). A `0` default is
+   rejected: beside real price growth it collapses the effective yield and swings the headline answer
+   ~18×. Unsourceable means `null` and say so, never a quiet `0`.
 6a. **A default is a claim.** Every shipped default carries the same provenance bar as any other
    figure. Most users never change one, so a wrong default is a wrong answer for most runs. The
    2026-08-08 audit found the engine correct and the defaults wrong — that is the cheaper mistake to
