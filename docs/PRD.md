@@ -69,11 +69,20 @@ inconsistent tax models.
   in exactly one place and documented at the call site. Never add a yield on top of a total return.
 - **Preset growth assumptions use the 10-year CAGR**, never trailing 1-year. A refresh on 2026-08-06
   briefly introduced 1-year total returns (SCHD at 24.08%) as long-run defaults; that is rejected.
-- **Dividend growth is a sourced figure, never a bare assumption (decided 2026-08-08).** Ship the
-  **10-year per-share distribution CAGR computed from the issuer's own distribution history**, stored
-  in `data/funds.json` with `asOf` and `source` like every other row. Issuers do not publish this as a
-  headline statistic, but they do publish the per-share history it is computed from — that is primary
-  data and meets the same provenance bar. **A `0` default is rejected.** Beside 9.12% price growth it
+- **Dividend growth defaults to constant yield (decided 2026-08-09, superseding 2026-08-08).**
+  The default `dividendGrowth` **equals `sharePriceGrowth`** — i.e. the yield is assumed to hold
+  steady — and is labelled in the UI as a **stated modelling convention, not a measurement**.
+  **A `0` default is rejected.**
+
+  *Why not a historical CAGR, as decided on 2026-08-08?* Because it could not be reproduced. Two
+  sources over the identical 8-year window disagree by **4.5 percentage points**: Schwab's own
+  distribution table, split-adjusted for the 3-for-1 of 2024-10-10, gives **11.18%**; stockanalysis.com
+  gives **6.70%**, and its pre-2020 annual figures run up to 38% above Schwab's own adjusted numbers
+  with no reconcilable explanation. Over 30 years that gap is roughly a **3× difference** in final
+  dividend income. Shipping either as "the sourced figure" would be a claim we cannot stand behind
+  (Constitution §3, §6a). Constant yield is honest about being a convention, sits between the
+  candidates, and removes the failure that started this: a yield silently collapsing because two
+  growth rates disagree. A per-fund sourced CAGR may return later if the discrepancy is ever settled. Beside 9.12% price growth it
   models a fund whose payout ratio falls toward zero, collapsing the effective yield from 3.25% to
   **0.24%** over 30 years and swinging the headline dividend figure **17.8×**. That is the project's
   own named failure mode — a plausible number, silently wrong. If a figure cannot be sourced it is
